@@ -1,0 +1,26 @@
+[package]
+name = "microfips-routing-espnow"
+version = "0.1.0"
+edition = "2024"
+description = "ESP-NOW routing layer for microFIPS mesh with MAC-to-node-address mapping"
+
+[lib]
+name = "microfips_routing_espnow"
+
+[features]
+default = []
+log = ["dep:log"]
+esp32c3 = ["microfips-esp-transport/esp32c3"]
+
+[dependencies]
+microfips-core = { path = "../microfips-core", features = ["log"] }
+microfips-esp-transport = { path = "../microfips-esp-transport" }
+microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
+microfips-esp-common = { path = "../microfips-esp-common" }
+
+# TODO: Add microfips-pipeline dependency when Phase 1 is implemented
+
+heapless = { workspace = true }
+embassy-time = { workspace = true }
+embassy-sync = { workspace = true }
+log = { workspace = true, optional = true }
