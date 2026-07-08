@@ -49,6 +49,7 @@ pub use microfips_esp_transport::run_tasks::run_wifi_node;
 
 #[cfg(feature = "espnow")]
 pub async fn run_espnow_node(
+    spawner: embassy_executor::Spawner,
     gpio2: esp_hal::peripherals::GPIO2<'static>,
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
@@ -67,6 +68,14 @@ pub async fn run_espnow_node(
     // Initialize ESP-NOW
     let (mut transport, local_mac) = EspNowTransport::init()
         .expect("ESP-NOW init failed");
+
+    // Initialize control interface for UART CLI
+    use microfips_esp_transport::node_info::NodeIdentity;
+    let identity = NodeIdentity::compute();
+    microfips_esp_transport::control::init_control(&identity, "espnow");
+    microfips_esp_transport::control::set_peer_pub(VPS_NPUB);
+    spawner.spawn(microfips_esp_transport::control::control_task()
+        .expect("spawn control task failed"));
 
     #[cfg(feature = "log")]
     log::info!("ESP-NOW initialized. MAC: {}", local_mac);
