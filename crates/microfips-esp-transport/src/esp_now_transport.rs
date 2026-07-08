@@ -12,6 +12,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{with_timeout, Duration, Timer};
+use async_trait::async_trait;
 
 use microfips_protocol::transport::Transport;
 
@@ -61,7 +62,6 @@ mod ffi {
         pub fn esp_wifi_start() -> c_int;
         pub fn esp_wifi_set_channel(primary: c_uchar, secondary: c_uchar) -> c_int;
         pub fn esp_read_mac(mac: *mut c_uchar, typ: c_int) -> c_int;
-        pub fn esp_mac_type_t;
     }
 
     // ESP-NOW functions
@@ -151,13 +151,24 @@ static ESPNOW_INITIALIZED: AtomicBool = AtomicBool::new(false);
 type RecvSignal = Signal<CriticalSectionRawMutex, ()>;
 static RECV_SIGNAL: RecvSignal = Signal::new();
 
-// Circular buffer for one incoming frame
-static INCOMING: embassy_sync::once_lock::OnceLock<heapless::Vec<u8, { ESP_NOW_PAYLOAD_MAX + 32 }>> =
-    embassy_sync::once_lock::OnceLock::new();
+// Packet structure for incoming ESP-NOW data
+#[derive(Clone, Copy)]
+struct Packet {
+    mac: MacAddress,
+    len: u8,
+    data: [u8; ESP_NOW_PAYLOAD_MAX],
+}
+
+// Circular buffer for incoming packets with proper synchronization
+const PACKET_QUEUE_SIZE: usize = 16;
+static PACKET_QUEUE: embassy_sync::mutex::Mutex<
+    CriticalSectionRawMutex, 
+    heapless::spsc::Queue<Packet, PACKET_QUEUE_SIZE>
+> = embassy_sync::mutex::Mutex::new(heapless::spsc::Queue::new());
 
 // ── C callback trampolines ──────────────────────────────────────────────────
 
-extern "C" fn esp_now_send_cb(_mac: *const u8, status: i32) {
+extern "C" fn esp_now_send_cb(_mac: *const u8, _status: i32) {
     // ESP-NOW send status: 0 = success, non-zero = fail
     // We don't block on send completion — fire-and-forget (Wirehair handles loss)
 }
@@ -167,24 +178,38 @@ extern "C" fn esp_now_recv_cb(
     data: *const u8,
     len: i32,
 ) {
-    if recv_info.is_null() || data.is_null() || len <= 0 {
+    if recv_info.is_null() || data.is_null() || len <= 0 || len > ESP_NOW_PAYLOAD_MAX as i32 {
         return;
     }
 
     let src_mac = unsafe { (*recv_info).src_addr };
     let data_slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
 
-    // We received data — signal the recv task
-    // For now, we just signal. The recv task will call back into ESP-NOW
-    // to get the data via a different mechanism.
-    //
-    // Actually, ESP-NOW callbacks run in ISR context. We can't do much here.
-    // The simplest approach: copy to a static buffer and signal.
-    // But for `no_std` without critical sections, let's use the Signal.
-    //
-    // For real implementation, we'd use a proper packet queue.
-    // For Phase 0.0: just signal that data arrived.
-    RECV_SIGNAL.signal(());
+    // Use mutex to safely access the packet queue
+    embassy_sync::mutex::Mutex::lock(&PACKET_QUEUE, |queue| {
+        if queue.len() < PACKET_QUEUE_SIZE {
+            // Create packet structure
+            let mut packet = Packet {
+                mac: MacAddress([0u8; MAC_LEN]),
+                len: len as u8,
+                data: [0u8; ESP_NOW_PAYLOAD_MAX],
+            };
+            
+            // Copy MAC address
+            unsafe {
+                core::ptr::copy_nonoverlapping(src_mac, packet.mac.0.as_mut_ptr(), MAC_LEN);
+            }
+            
+            // Copy data
+            packet.data[..data_slice.len()].copy_from_slice(data_slice);
+            
+            // Enqueue the packet
+            queue.push(packet).ok();
+            
+            // Signal the recv task
+            RECV_SIGNAL.signal(());
+        }
+    });
 }
 
 // ── ESP-NOW transport ───────────────────────────────────────────────────────
@@ -203,6 +228,8 @@ impl EspNowTransport {
             // Already initialized — return a new handle
             return Err(EspNowError::InitFailed);
         }
+
+        // Packet queue is already initialized as static mutex
 
         unsafe {
             // 1. Init NVS
@@ -269,10 +296,10 @@ impl EspNowTransport {
         Ok((
             EspNowTransport {
                 initialized: true,
-                local_mac: MacAddress([0u8; MAC_LEN]),
+                local_mac: local_mac,
                 peer: MacAddress([0u8; MAC_LEN]),
             },
-            MacAddress([0u8; MAC_LEN]), // placeholder, real MAC from init
+            local_mac,
         ))
     }
 
@@ -343,6 +370,7 @@ impl EspNowTransport {
     }
 }
 
+#[async_trait::async_trait]
 impl Transport for EspNowTransport {
     type Error = EspNowError;
 
@@ -359,22 +387,35 @@ impl Transport for EspNowTransport {
     }
 
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        // Wait for the signal from the ISR callback
-        RECV_SIGNAL.wait().await;
-
-        // The ESP-NOW callback ran. We need to actually read the data.
-        // In a full implementation, the callback would buffer into a
-        // packet queue. For Phase 0.0, we return a placeholder.
-        //
-        // Real implementation: the ISR callback pushes into a SPSC queue,
-        // and this task pops from it.
-        //
-        // For now: signal that data is pending but we can't extract it
-        // from ISR context without a proper buffer.
-
-        // Return 0 to indicate "data pending, call read()" — placeholder.
-        // Real implementation will fill buf with the packet data.
-        Ok(0)
+        // Check if there are any packets already in the queue
+        let mut has_packet = false;
+        embassy_sync::mutex::Mutex::lock(&PACKET_QUEUE, |queue| {
+            has_packet = !queue.is_empty();
+        });
+        
+        // Only wait for signal if queue is empty
+        if !has_packet {
+            // Wait for the signal from the ISR callback with a timeout
+            match with_timeout(Duration::from_millis(1000), RECV_SIGNAL.wait()).await {
+                Ok(_) => {}, // Signal received
+                Err(_) => return Err(EspNowError::Timeout),
+            }
+        }
+        
+        // Lock the queue and dequeue a packet
+        embassy_sync::mutex::Mutex::lock(&PACKET_QUEUE, |queue| {
+            if let Some(packet) = queue.dequeue() {
+                // Copy packet data to the buffer
+                let len = packet.len as usize;
+                let copy_len = len.min(buf.len());
+                buf[..copy_len].copy_from_slice(&packet.data[..copy_len]);
+                
+                Ok(copy_len)
+            } else {
+                // No packet available (signal might be stale)
+                Err(EspNowError::Timeout)
+            }
+        })
     }
 }
 
