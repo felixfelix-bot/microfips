@@ -1,0 +1,539 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      fips_branch:
+        description: "FIPS branch to check out (overrides .fips-upstream.json)"
+        required: false
+        default: ""
+      fips_commit:
+        description: "FIPS commit hash (overrides branch, overrides .fips-upstream.json)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo test -p microfips-core
+
+      # Run with --features std to include load_secret/load_peer_pub tests;
+      # --test-threads=1 because env var tests modify process-global state.
+      - run: cargo test -p microfips-core --features std -- --test-threads=1
+
+      - run: cargo test -p microfips-protocol --features std -- --test-threads=1
+      - run: cargo test -p microfips-service
+      - run: cargo test -p microfips-l2cap-test
+      # http-demo tests disabled: nightly SocketAddr::ToString regression
+      # - run: cargo test -p microfips-http-demo --features http
+
+  golden-vectors:
+    name: Golden Vectors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check FIPS golden vectors drift
+        run: |
+          echo "Fetching latest golden_vectors.json from FIPS golden-vectors branch..."
+          curl -sL "https://raw.githubusercontent.com/Amperstrand/fips/golden-vectors/golden_vectors.json" -o /tmp/fips_vectors.json
+          
+          echo "Comparing local vectors with FIPS reference..."
+          LOCAL_HASH=$(sha256sum crates/microfips-core/tests/golden_vectors.json | cut -d' ' -f1)
+          FIPS_HASH=$(sha256sum /tmp/fips_vectors.json | cut -d' ' -f1)
+          
+          echo "Local hash: $LOCAL_HASH"
+          echo "FIPS hash:  $FIPS_HASH"
+          
+          if [ "$LOCAL_HASH" != "$FIPS_HASH" ]; then
+            echo "::error::Golden vectors drift detected! Local copy does not match FIPS reference."
+            echo "Run: curl -sL 'https://raw.githubusercontent.com/Amperstrand/fips/golden-vectors/golden_vectors.json' -o crates/microfips-core/tests/golden_vectors.json"
+            exit 1
+          fi
+          
+          echo "✓ Golden vectors are in sync with FIPS reference"
+
+      - run: cargo test -p microfips-core --test golden_vectors
+
+  fips-compat:
+    name: FIPS Compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve FIPS ref from config
+        id: fips-ref
+        run: |
+          BRANCH="${{ github.event.inputs.fips_branch }}"
+          COMMIT="${{ github.event.inputs.fips_commit }}"
+          if [ -z "$BRANCH" ]; then
+            BRANCH=$(python3 -c "import json; print(json.load(open('.fips-upstream.json'))['branch'])")
+          fi
+          if [ -z "$COMMIT" ]; then
+            COMMIT=$(python3 -c "import json; print(json.load(open('.fips-upstream.json')).get('commit', ''))" 2>/dev/null || true)
+          fi
+          REF="${COMMIT:-$BRANCH}"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "FIPS ref: $REF"
+
+      - name: Checkout upstream FIPS
+        uses: actions/checkout@v4
+        with:
+          repository: Amperstrand/fips
+          ref: ${{ steps.fips-ref.outputs.ref }}
+          path: upstream-fips
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Generate fips_compat.rs
+        run: python3 tools/generate_fips_compat.py --fips-root ./upstream-fips
+
+      - name: Check for drift
+        run: |
+          if ! git diff --quiet crates/microfips-core/src/generated/fips_compat.rs; then
+            echo "::error::Generated fips_compat.rs differs from checked-in version."
+            echo "::error::Run: python3 tools/generate_fips_compat.py"
+            echo "::error::Then commit the updated file."
+            echo ""
+            echo "Diff:"
+            git diff crates/microfips-core/src/generated/fips_compat.rs
+            exit 1
+          fi
+          echo "fips_compat.rs matches upstream FIPS @ ${{ steps.fips-ref.outputs.ref }}"
+
+  noise-compliance:
+    name: Noise Spec Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Count tests
+        run: |
+          CORE_COUNT=$(cargo test -p microfips-core --features std -- --list 2>&1 | grep -c "test$" || true)
+          PROTO_COUNT=$(cargo test -p microfips-protocol --features std -- --list 2>&1 | grep -c "test$" || true)
+          FSP_COUNT=$(cargo test -p microfips-core --features std --test fsp_over_fmp -- --list 2>&1 | grep -c "test$" || true)
+          TOTAL=$((CORE_COUNT + FSP_COUNT))
+          echo "Core tests: $CORE_COUNT (expect >= 169)"
+          echo "Protocol tests: $PROTO_COUNT (expect >= 46)"
+          echo "FSP integration tests: $FSP_COUNT (expect >= 6)"
+          echo "Total core: $TOTAL (expect >= 175)"
+          if [ "$CORE_COUNT" -lt 169 ]; then
+            echo "::error::Core test count dropped below 169 (got $CORE_COUNT)"
+            exit 1
+          fi
+          if [ "$PROTO_COUNT" -lt 46 ]; then
+            echo "::error::Protocol test count dropped below 46 (got $PROTO_COUNT)"
+            exit 1
+          fi
+          if [ "$FSP_COUNT" -lt 6 ]; then
+            echo "::error::FSP integration test count dropped below 6 (got $FSP_COUNT)"
+            exit 1
+          fi
+
+      - name: Verify FIPS-bug-compatible deviations are documented
+        run: |
+          NOISE_RS="crates/microfips-core/src/noise.rs"
+          echo "Checking that Noise deviations are documented..."
+          grep -q "FIPS: no AAD during handshake" "$NOISE_RS" || { echo "::error::Missing D1 documentation (empty AAD)"; exit 1; }
+          grep -q "se_and_es_produce_different_keys" "$NOISE_RS" || { echo "::error::Missing D2 documentation (se DH swap)"; exit 1; }
+          echo "D1 (empty AAD) and D2 (se DH swap) deviations are documented."
+
+      - name: Run deviation-specific tests
+        run: |
+          cargo test -p microfips-core --features std -- se_and_es_produce_different_keys
+          cargo test -p microfips-core --features std -- ik_se_uses_es_dh_inputs_intentionally
+          cargo test -p microfips-core --features std -- fsp_session_full_flow
+          cargo test -p microfips-core --features std --test fsp_over_fmp -- test_fsp_full_handshake_over_fmp
+
+      - name: Run Noise IK transport key consistency (10 rounds)
+        run: |
+          for i in $(seq 1 10); do
+            cargo test -p microfips-core --features std -- noise_ik_transport_keys_are_deterministic --quiet || { echo "::error::IK transport key test failed on round $i"; exit 1; }
+          done
+          echo "IK transport keys consistent across 10 rounds"
+
+      - name: Run Noise XK transport key consistency (10 rounds)
+        run: |
+          for i in $(seq 1 10); do
+            cargo test -p microfips-core --features std -- noise_xk_transport_keys_are_deterministic --quiet || { echo "::error::XK transport key test failed on round $i"; exit 1; }
+          done
+          echo "XK transport keys consistent across 10 rounds"
+
+      - name: Check FSP handshake stability (10 rounds)
+        run: |
+          for i in $(seq 1 10); do
+            cargo test -p microfips-core --features std --test fsp_over_fmp -- test_fsp_full_handshake_over_fmp --quiet || { echo "::error::FSP handshake test failed on round $i"; exit 1; }
+          done
+          echo "FSP full handshake stable across 10 rounds"
+
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rustsec/audit-action@v2
+        with:
+          deny: warnings
+
+  build-host:
+    name: Build Host Tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build -p microfips-link --release
+      - run: cargo build -p microfips-sim --release
+      - run: cargo build -p microfips-http-test --release
+      # http-demo build disabled: nightly SocketAddr::ToString regression
+      # - run: cargo build -p microfips-http-demo --features http --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fips-handshake
+          path: target/release/fips-handshake
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: microfips-sim
+          path: target/release/microfips-sim
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: microfips-http-test
+          path: target/release/microfips-http-test
+          retention-days: 7
+
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt -p microfips-core -p microfips-protocol -p microfips-service -p microfips-link -p microfips-sim -p microfips-http-test -p fips-decrypt -p microfips-l2cap-test -p microfips-build -p microfips-esp-common -p microfips-esp-transport -p microfips-http-demo -- --check
+
+      - name: Run clippy
+        # ESP crates (esp-common, esp-transport) require ESP toolchain — omit from host lint
+        run: cargo clippy -p microfips-core -p microfips-protocol -p microfips-service -p microfips-link -p microfips-sim -p microfips-http-test -p fips-decrypt -p microfips-l2cap-test -p microfips-build -p microfips-http-demo -- -D warnings
+
+  sim-smoke:
+    name: Simulator Smoke Test
+    runs-on: ubuntu-latest
+    needs: [build-host]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: microfips-sim
+          path: ./bin
+
+      - run: chmod +x ./bin/microfips-sim
+
+      - name: Verify simulator starts and exits cleanly on EOF
+        timeout-minutes: 1
+        run: |
+          timeout 5 ./bin/microfips-sim </dev/null 2>&1 | head -5
+          echo "sim exited with code $?"
+
+  fips-integration:
+    name: FIPS Handshake Integration
+    runs-on: ubuntu-latest
+    needs: [build-host]
+    env:
+      FIPS_ADDR: orangeclaw.dns4sats.xyz:2121
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: fips-handshake
+          path: ./bin
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: microfips-http-test
+          path: ./bin
+
+      - run: chmod +x ./bin/fips-handshake ./bin/microfips-http-test
+
+      - name: Generate fresh key pairs
+        run: |
+          echo "--- Generating node (responder) key pair ---"
+          NODE_KEYS=$(./bin/fips-handshake --keygen)
+          echo "$NODE_KEYS"
+          echo "NODE_SECRET=$(echo "$NODE_KEYS" | sed -n 's/^FIPS_NSEC=//p')" >> "$GITHUB_ENV"
+          echo "NODE_PUB=$(echo "$NODE_KEYS" | sed -n 's/^FIPS_PUB=//p')" >> "$GITHUB_ENV"
+
+          echo "--- Generating leaf (initiator) key pair ---"
+          LEAF_KEYS=$(./bin/fips-handshake --keygen)
+          echo "$LEAF_KEYS"
+          echo "LEAF_SECRET=$(echo "$LEAF_KEYS" | sed -n 's/^FIPS_NSEC=//p')" >> "$GITHUB_ENV"
+          echo "LEAF_PUB=$(echo "$LEAF_KEYS" | sed -n 's/^FIPS_PUB=//p')" >> "$GITHUB_ENV"
+
+      - name: Start FIPS responder
+        run: |
+          echo "Starting responder with node key..."
+          FIPS_NSEC="$NODE_SECRET" FIPS_PEER_NPUB="$LEAF_PUB" ./bin/microfips-http-test 127.0.0.1:31338 &
+          echo $! > /tmp/responder.pid
+          sleep 1
+          echo "Responder running (pid $(cat /tmp/responder.pid))"
+
+      - name: "Test 1: Leaf → local node handshake (fresh keys)"
+        timeout-minutes: 1
+        run: |
+          echo "=== Leaf → Node handshake (fresh keys, localhost) ==="
+          FIPS_NSEC="$LEAF_SECRET" FIPS_PEER_NPUB="$NODE_PUB" \
+            ./bin/fips-handshake 127.0.0.1:31338
+          echo "=== LOCAL HANDSHAKE SUCCEEDED ==="
+
+      - name: Stop local responder
+        if: always()
+        run: |
+          if [ -f /tmp/responder.pid ]; then
+            kill "$(cat /tmp/responder.pid)" 2>/dev/null || true
+          fi
+
+      - name: "Test 2: Leaf → public FIPS node (explicit keys)"
+        timeout-minutes: 1
+        continue-on-error: true
+        run: |
+          STM32_NSEC=$(python3 - <<'PY'
+          import json
+          with open('keys.json') as f:
+              keys = json.load(f)
+          print(keys['devices']['stm32']['nsec_hex'])
+          PY
+          )
+          VPS_NPUB=$(python3 - <<'PY'
+          import json
+          with open('keys.json') as f:
+              keys = json.load(f)
+          print(keys['devices']['vps']['npub_hex'])
+          PY
+          )
+          echo "=== Leaf → public FIPS node ==="
+          echo "Using explicit STM32 identity and VPS peer pubkey from keys.json"
+          FIPS_NSEC="$STM32_NSEC" FIPS_PEER_NPUB="$VPS_NPUB" ./bin/fips-handshake "$FIPS_ADDR" 2>&1 || true
+          echo "=== (continue-on-error: VPS may be unreachable from CI) ==="
+
+  build-firmware:
+    name: Build Firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+          targets: thumbv7em-none-eabi
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install ARM tools
+        run: sudo apt-get update -qq && sudo apt-get install -yqq gcc-arm-none-eabi
+
+      - run: cargo build -p microfips --release --target thumbv7em-none-eabi
+
+      - run: cargo build -p microfips --release --target thumbv7em-none-eabi --no-default-features --features board-f746
+
+      - name: Validate firmware binary
+        run: |
+          BINARY="target/thumbv7em-none-eabi/release/microfips"
+          ELF_SIZE=$(stat -c%s "$BINARY")
+          TEXT_SIZE=$(arm-none-eabi-size "$BINARY" | tail -1 | awk '{print $1}')
+          echo "ELF size: $ELF_SIZE bytes ($(($ELF_SIZE / 1024)) KB)"
+          echo ".text size: $TEXT_SIZE bytes"
+          if [ "$TEXT_SIZE" -lt 10000 ]; then
+            echo "::error::Firmware .text is only ${TEXT_SIZE}B — linker script not applied"
+            exit 1
+          fi
+          if [ "$TEXT_SIZE" -gt 200000 ]; then
+            echo "::warning::Firmware .text is ${TEXT_SIZE}B — unexpectedly large"
+          fi
+        id: size
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware-elf
+          path: target/thumbv7em-none-eabi/release/microfips
+          retention-days: 7
+
+  build-esp32:
+    name: Build ESP32 Firmware
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Xtensa toolchain
+        uses: esp-rs/xtensa-toolchain@v1.6
+        with:
+          default: true
+          buildtargets: esp32,esp32s3
+          ldproxy: false
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: esp32
+
+      - name: Add rust-src component
+        run: rustup component add rust-src
+
+      - name: Build ESP32 UART
+        run: cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc
+
+      - name: Build ESP32 BLE
+        run: cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features ble
+
+      - name: Build ESP32 L2CAP
+        run: cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features l2cap
+
+      - name: Build ESP32 WiFi
+        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32 --release --target xtensa-esp32-none-elf -Zbuild-std=core,alloc --features wifi
+
+      - name: Build ESP32-S3 WiFi
+        run: WIFI_SSID=ci WIFI_PASSWORD=ci cargo build -p microfips-esp32s3 --release --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
+
+  sim-ping:
+    name: Sim-to-Sim Ping via FIPS
+    runs-on: ubuntu-latest
+    needs: [build-host]
+    continue-on-error: true
+    timeout-minutes: 4
+    env:
+      FIPS_ADDR: orangeclaw.dns4sats.xyz:2121
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: microfips-sim
+          path: ./bin
+
+      - run: chmod +x ./bin/microfips-sim
+
+      - name: Run sim-to-sim ping test against live FIPS
+        run: |
+          set -e
+
+          VPS_NPUB=$(python3 - <<'PY'
+          import json
+          with open('keys.json') as f:
+              keys = json.load(f)
+          print(keys['devices']['vps']['npub_hex'])
+          PY
+          )
+
+          FIPS_PEER_NPUB="$VPS_NPUB" ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-a > /tmp/sim-a.log 2>&1 &
+          SIMA_PID=$!
+          sleep 8
+
+          if ! kill -0 $SIMA_PID 2>/dev/null; then
+            echo "::error::SIM-A crashed before SIM-B started"
+            grep -E "(error|FAIL|ERR)" /tmp/sim-a.log || true
+            exit 1
+          fi
+          echo "SIM-A connected"
+
+          FIPS_PEER_NPUB="$VPS_NPUB" timeout 90 ./bin/microfips-sim --udp "$FIPS_ADDR" --sim-b --test-ping > /tmp/sim-b.log 2>&1 &
+          SIMB_PID=$!
+
+          wait $SIMB_PID 2>/dev/null
+          EXIT=$?
+
+          echo "=== SIM-B trace ==="
+          grep -E "(MSG1|MSG2|handshake|ACK|PONG|PING|FAIL|error)" /tmp/sim-b.log || true
+
+          echo "=== SIM-A trace ==="
+          grep -E "(LEAF|sending|ACK|PONG|PING|FAIL|error)" /tmp/sim-a.log || true
+
+          kill $SIMA_PID 2>/dev/null || true
+
+          if [ "$EXIT" -eq 0 ]; then
+            echo "=== PASS: PING/PONG round-trip confirmed via FIPS ==="
+          else
+            echo "::error::FAIL: SIM-B did not receive PONG (exit=$EXIT)"
+            exit 1
+          fi
+
+      - name: Cleanup
+        if: always()
+        run: |
+          kill $(pgrep -f microfips-sim) 2>/dev/null || true
+
+  summary:
+    name: CI Summary
+    runs-on: ubuntu-latest
+    needs: [test, golden-vectors, fips-compat, build-host, lint, sim-smoke, sim-ping, build-firmware, build-esp32, fips-integration]
+    if: always()
+    steps:
+      - run: |
+          echo "# CI Pipeline Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Job | Status |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Unit Tests | \`${{ needs.test.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Golden Vectors | \`${{ needs.golden-vectors.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| FIPS Compat | \`${{ needs.fips-compat.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build Host Tools | \`${{ needs.build-host.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Lint & Format | \`${{ needs.lint.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Simulator Smoke | \`${{ needs.sim-smoke.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Sim-to-Sim Ping | \`${{ needs.sim-ping.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build Firmware | \`${{ needs.build-firmware.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build ESP32 | \`${{ needs.build-esp32.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| FIPS Integration | \`${{ needs.fips-integration.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,25 @@
+[package]
+name = "microfips-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "FIPS leaf node protocol: handshake, heartbeat, framing over any transport"
+
+[dependencies]
+microfips-core = { path = "../microfips-core" }
+embassy-time = "0.5.1"
+embassy-futures = "0.1.2"
+rand_core = { version = "0.6", default-features = false }
+log = { version = "0.4", optional = true }
+
+[dev-dependencies]
+embassy-executor = { version = "0.10.0", features = ["platform-std", "executor-thread"] }
+microfips-core = { path = "../microfips-core", features = ["std"] }
+rand = "0.9"
+k256 = { version = "0.13", features = ["arithmetic", "ecdsa", "ecdh"] }
+
+[features]
+default = ["mmp"]
+std = ["microfips-core/std", "embassy-time/std", "dep:log"]
+log = ["dep:log"]
+mmp = []
+benchmark = []

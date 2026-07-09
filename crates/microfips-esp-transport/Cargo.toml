@@ -1,0 +1,44 @@
+[package]
+name = "microfips-esp-transport"
+version = "0.1.0"
+edition = "2021"
+description = "Shared ESP32 transport code with esp-hal support"
+
+[lib]
+name = "microfips_esp_transport"
+
+[features]
+default = []
+esp32 = ["esp-hal/esp32", "esp-radio/esp32", "esp-println/esp32", "esp-println/auto"]
+esp32s3 = ["esp-hal/esp32s3", "esp-radio/esp32s3", "esp-println/esp32s3", "esp-println/jtag-serial"]
+log = ["dep:log"]
+ble = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "log"]
+l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "log"]
+wifi = ["dep:esp-radio", "dep:embassy-net", "dep:esp-println", "log"]
+
+[build-dependencies]
+microfips-build = { workspace = true }
+
+[dependencies]
+microfips-core = { path = "../microfips-core", features = ["log"] }
+microfips-esp-common = { path = "../microfips-esp-common" }
+microfips-http-demo = { path = "../microfips-http-demo" }
+microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
+microfips-service = { path = "../microfips-service" }
+rand_core = { workspace = true }
+esp-hal = { workspace = true, features = ["unstable"] }
+embassy-time = { workspace = true }
+embassy-futures = { workspace = true }
+embassy-executor = { workspace = true }
+embassy-sync = { workspace = true }
+embedded-io-async = { workspace = true }
+heapless = { workspace = true }
+static_cell = { workspace = true }
+embassy-net = { workspace = true, features = ["dhcpv4", "udp"], optional = true }
+esp-radio = { workspace = true, features = ["ble", "wifi", "unstable"], optional = true }
+trouble-host = { workspace = true, optional = true }
+esp-alloc = { workspace = true, features = ["global-allocator"] }
+bt-hci = { workspace = true, features = ["uuid"], optional = true }
+embedded-io = { workspace = true, optional = true }
+esp-println = { workspace = true, optional = true }
+log = { workspace = true, optional = true }

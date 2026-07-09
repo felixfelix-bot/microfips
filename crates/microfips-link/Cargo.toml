@@ -1,0 +1,17 @@
+[package]
+name = "microfips-link"
+version = "0.1.0"
+edition = "2021"
+description = "FMP link integration test (host-side, std only)"
+
+[[bin]]
+name = "fips-handshake"
+path = "src/main.rs"
+
+[dependencies]
+microfips-core = { path = "../microfips-core", features = ["std"] }
+k256 = { version = "0.13", features = ["arithmetic", "ecdsa", "ecdh", "std"] }
+hex = "0.4"
+rand = "0.9"
+env_logger = "0.11"
+log = "0.4"

@@ -1,0 +1,23 @@
+[package]
+name = "microfips-sim"
+version = "0.1.0"
+edition = "2021"
+description = "Host-side FIPS lifecycle simulator — simulates MCU protocol without hardware"
+
+[dependencies]
+microfips-core = { path = "../microfips-core", features = ["std"] }
+microfips-http-demo = { path = "../microfips-http-demo" }
+microfips-protocol = { path = "../microfips-protocol", features = ["std"] }
+microfips-service = { path = "../microfips-service" }
+embassy-executor = { version = "0.10.0", features = ["platform-std", "executor-thread"] }
+embassy-time = { version = "0.5.1", features = ["std"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+rand = "0.9"
+hex = "0.4"
+k256 = { version = "0.13", features = ["arithmetic", "ecdsa", "ecdh"] }
+bech32 = "0.11"
+env_logger = "0.11"
+log = "0.4"
+
+[build-dependencies]
+microfips-build = { path = "../microfips-build" }
