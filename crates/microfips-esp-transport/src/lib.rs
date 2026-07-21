@@ -35,6 +35,11 @@ pub mod lr2021_spi;
 #[cfg(any(test, feature = "mock"))]
 pub mod lr2021_transport;
 
+/// LR2021 real hardware SPI driver for ESP32-C3 using esp-hal.
+/// Only compiled for embedded targets (esp32c3 feature).
+#[cfg(feature = "esp32c3")]
+pub mod lr2021_esp_hal;
+
 #[cfg(any(feature = "esp32s3", feature = "esp32c3"))]
 pub mod usb_transport;
 

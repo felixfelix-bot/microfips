@@ -97,18 +97,18 @@ impl Default for Lr2021Config {
 
 bitflags::bitflags! {
     /// IRQ source flags from the LR2021 GET_IRQ_STATUS command.
+    /// These are 32-bit flags from the LR2021's 4-byte IRQ status register.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct IrqSource: u16 {
-        const TX_DONE          = 0x0001;
-        const RX_DONE          = 0x0002;
-        const PREAMBLE_DETECTED = 0x0004;
-        const SYNCWORD_VALID   = 0x0008;
-        const HEADER_VALID     = 0x0010;
-        const CRC_ERROR        = 0x0020;
-        const CAD_DONE         = 0x0040;
-        const CAD_DETECTED     = 0x0080;
-        const RX_TX_TIMEOUT    = 0x0100;
-        const ALL              = 0xFFFF;
+    pub struct IrqSource: u32 {
+        const TX_DONE          = 0x00080000; // Bit 19
+        const RX_DONE          = 0x00040000; // Bit 18
+        const CMD_ERROR        = 0x00020000; // Bit 17
+        const CRC_ERROR        = 0x00100000; // Bit 20
+        const TIMEOUT          = 0x00200000; // Bit 21
+        const PREAMBLE_DETECTED = 0x00000002; // Bit 1
+        const SYNCWORD_VALID   = 0x00000004; // Bit 2
+        const HEADER_VALID     = 0x00000008; // Bit 3
+        const ALL              = 0xFFFFFFFF;
     }
 }
 
