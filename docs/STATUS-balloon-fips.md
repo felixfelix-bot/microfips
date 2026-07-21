@@ -1,0 +1,11 @@
+### STATUS REPORT: balloon-fips
+- Current Phase: execution
+- Kanban Telemetry: no board
+- Last Commit: 48c031f — docs: add anti-coordination guardrails to AGENTS.md
+- Immediate Blockers: LR2021 test crate has 20 compile errors (import path issues, E0432/E0433/E0596). EspHalLr2021Radio (real SPI driver) not written. ESP-NOW transport blocked by esp-radio pub(crate) constructor.
+- Dependencies Waiting On: None — no hard blocking deps on other tracks. LR2021 radio baseline already proven by balloon-range-tests.
+- Next 3 Deliverables: 1) Fix LR2021 test crate compile errors (2-4h), 2) Write EspHalLr2021Radio SPI driver (2-3 days), 3) Lr2021Transport roundtrip test with mock (host)
+- Estimated Integration Readiness: 2026-07-31
+- Critical Output: Two-node LR2021 FIPS demo — ESP32-C3 nodes completing Noise IK handshake over FLRC radio
+- Shared Resources Needed: 2x LR2021 modules, 2x ESP32-C3 boards, DQ05 build server
+- Questions for Orchestrator: 1) Abandon ESP-NOW entirely, focus 100% on LR2021? Saves 3-5 days. 2) LR2021 modules + ESP32-C3 boards available now or still in use by range-tests/speed-tests? 3) Defer erasure coding to after first demo (MSG1=114B fits single FLRC packet)? 4) Point-to-point sufficient for v1 flight, skip STP+bloom routing? 5) Merge feat/lr2021-transport back to feat/fips-v0-compat when demo works?
