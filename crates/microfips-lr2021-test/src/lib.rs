@@ -4,6 +4,8 @@
 //! and its portable-atomic dependency chain. This allows running unit tests
 //! on the host (x86_64) without any embedded toolchain.
 
+extern crate alloc;
+
 #[path = "../../microfips-esp-transport/src/lr2021_framing.rs"]
 pub mod lr2021_framing;
 
@@ -16,8 +18,8 @@ pub mod lr2021_transport;
 #[cfg(test)]
 mod tests {
     use embassy_futures::block_on;
-    use lr2021_framing as framing;
-    use lr2021_spi as spi;
+    use crate::lr2021_framing as framing;
+    use crate::lr2021_spi as spi;
 
     // ═══════════════════════════════════════════════════════════════════
     // Framing tests
@@ -182,7 +184,7 @@ mod tests {
     #[test]
     fn test_transport_not_initialized_error() {
         block_on(async {
-            use lr2021_transport::{Lr2021Transport, TransportError};
+            use crate::lr2021_transport::{Lr2021Transport, TransportError};
             use microfips_protocol::transport::Transport;
             use spi::MockLr2021Radio;
 
@@ -201,7 +203,7 @@ mod tests {
     #[test]
     fn test_transport_send_flush() {
         block_on(async {
-            use lr2021_transport::Lr2021Transport;
+            use crate::lr2021_transport::Lr2021Transport;
             use microfips_protocol::transport::Transport;
             use spi::{Lr2021Config, MockLr2021Radio};
 
@@ -225,7 +227,7 @@ mod tests {
     #[test]
     fn test_transport_large_payload_fragmentation() {
         block_on(async {
-            use lr2021_transport::Lr2021Transport;
+            use crate::lr2021_transport::Lr2021Transport;
             use microfips_protocol::transport::Transport;
             use spi::{Lr2021Config, MockLr2021Radio};
 
@@ -248,7 +250,7 @@ mod tests {
     #[test]
     fn test_transport_recv_after_irq() {
         block_on(async {
-            use lr2021_transport::Lr2021Transport;
+            use crate::lr2021_transport::Lr2021Transport;
             use microfips_protocol::transport::Transport;
             use spi::{Lr2021Config, MockLr2021Radio};
 
@@ -263,7 +265,7 @@ mod tests {
             // Recv should return the data
             let mut buf = [0u8; 64];
             let n = transport.recv(&mut buf).await.unwrap();
-            assert_eq!(n, 13);
+            assert_eq!(n, 14);
             assert_eq!(&buf[..n], b"incoming data!");
         });
     }
@@ -275,7 +277,7 @@ mod tests {
     #[test]
     fn test_framewriter_through_lr2021_to_framereader() {
         block_on(async {
-            use lr2021_transport::Lr2021Transport;
+            use crate::lr2021_transport::Lr2021Transport;
             use microfips_protocol::transport::{FrameReader, FrameWriter, Transport};
             use spi::{Lr2021Config, MockLr2021Radio};
 
@@ -316,7 +318,7 @@ mod tests {
     fn test_fips_handshake_msg1_fits_single_packet() {
         // Noise IK MSG1 is ~114 bytes wire — should fit in a single FLRC packet
         block_on(async {
-            use lr2021_transport::Lr2021Transport;
+            use crate::lr2021_transport::Lr2021Transport;
             use microfips_protocol::transport::{FrameWriter, Transport};
             use spi::{Lr2021Config, MockLr2021Radio};
 

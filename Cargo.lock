@@ -2336,6 +2336,7 @@ name = "microfips-lr2021-test"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.0",
+ "critical-section",
  "embassy-executor",
  "embassy-futures",
  "embassy-sync 0.8.0",

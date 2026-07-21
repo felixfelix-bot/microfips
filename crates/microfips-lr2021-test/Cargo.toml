@@ -7,6 +7,7 @@ description = "Standalone host-side test crate for LR2021 framing and mock trans
 [dependencies]
 heapless = "0.9"
 bitflags = "2"
+critical-section = { version = "1.2", features = ["std"] }
 
 [dependencies.microfips-protocol]
 path = "../microfips-protocol"
@@ -14,7 +15,7 @@ features = ["std"]
 
 [dependencies.embassy-time]
 version = "0.5.1"
-features = ["std"]
+features = ["std", "generic-queue-8"]
 
 [dependencies.embassy-sync]
 version = "0.8"

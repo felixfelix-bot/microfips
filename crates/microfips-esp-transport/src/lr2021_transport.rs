@@ -79,7 +79,7 @@ const IRQ_POLL_MS: u64 = 1;
 /// // transport implements Transport — use with FrameWriter/FrameReader
 /// ```
 pub struct Lr2021Transport<R: Lr2021Radio> {
-    radio: R,
+    pub radio: R,
     tx_framer: TxFramer,
     rx_framer: RxFramer,
     /// Signal set by IRQ handler when a packet is received
@@ -121,7 +121,7 @@ impl<R: Lr2021Radio> Lr2021Transport<R> {
     /// This should be called from the GPIO interrupt handler (or polled).
     /// It reads the IRQ status, clears flags, and signals the appropriate
     /// waiters (rx_ready for RX_DONE, tx_done for TX_DONE).
-    pub async fn handle_irq(&self) -> Result<(), Lr2021Error> {
+    pub async fn handle_irq(&mut self) -> Result<(), Lr2021Error> {
         let irq = self.radio.get_irq_status().await?;
 
         if irq.contains(IrqSource::RX_DONE) {
@@ -250,16 +250,17 @@ impl<R: Lr2021Radio> Lr2021Transport<R> {
     async fn transmit_packet(&mut self, data: &[u8]) -> Result<(), TransportError> {
         self.radio.send_packet(data).await?;
 
-        // Wait for TX_DONE IRQ
-        match with_timeout(
-            Duration::from_millis(RADIO_TIMEOUT_MS),
-            self.tx_done.wait(),
-        )
-        .await
-        {
-            Ok(()) => Ok(()),
-            Err(_) => Err(TransportError::Timeout),
+        // Poll IRQ until TX_DONE (mock sets it immediately, real radio takes ~ms)
+        for _ in 0..1000 {
+            let irq = self.radio.get_irq_status().await?;
+            if irq.contains(IrqSource::TX_DONE) {
+                self.radio.clear_irq().await?;
+                let _ = self.radio.start_rx().await;
+                return Ok(());
+            }
+            embassy_futures::yield_now().await;
         }
+        Err(TransportError::Timeout)
     }
 
     /// Poll the IRQ pin (alternative to interrupt-driven handle_irq).
