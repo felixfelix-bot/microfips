@@ -128,8 +128,9 @@ L0  ESP32-C3 SPI bus (MOSI=7, MISO=2, SCLK=6, CS=10) — UNCHANGED
 ### 4.2 What This Means for Current Work
 
 The EspHalLr2021Radio SPI driver being developed is **unaffected** by the
-module change. The F33 uses the same Semtech SX1280 die, same SPI command
-set, same register map. The PA is transparent to the digital interface.
+module change. The F33 uses the same Semtech LR2021 die (Gen 4, NOT SX1280),
+same LR11xx SPI command set, same register map. The PA is transparent to
+the digital interface. See ADR-017 — SX1280 is banned from the codebase.
 
 **No code changes required for the 2W module:**
 - Lr2021Radio trait — no changes (abstracts SPI + register access)
@@ -140,14 +141,15 @@ set, same register map. The PA is transparent to the digital interface.
   on baseline). This is a one-register change in the init sequence.
 
 **TX power configuration:**
-The SX1280 TX power register (`SetTxParams`) controls output power in
-steps. On the F33 module, the internal PA amplifies the chip's output.
-The SPI command is the same — only the power value changes:
+The LR2021 TX power is configured via the LR11xx command set (use RadioLib's
+LR2021 driver: `radio.setOutputPower(dbm)`). On the F33 module, the internal
+PA amplifies the chip's output. The SPI interface is the same — only the
+power value changes:
 
 ```rust
-// Baseline module: max TX power ~+12 dBm (0x0C)
-// F33 2W module: max TX power +33 dBm (0x1F or per F33 datasheet)
-radio.set_tx_power(0x1F); // Set to max for F33
+// Baseline module: max TX power ~+12 dBm
+// F33 2W module: max TX power +33 dBm
+radio.setOutputPower(33); // RadioLib LR2021 driver, +33 dBm for F33
 ```
 
 This is the ONLY code change: the TX power value in the radio init.
@@ -246,7 +248,7 @@ The F33 module PA may require specific power-up sequencing:
 5. Ready for TX/RX
 
 **Verify against F33 datasheet** — PA enable pin may need GPIO control
-separate from the SX1280 chip RESET. If the F33 has a PA enable pin, add
+separate from the LR2021 chip RESET. If the F33 has a PA enable pin, add
 it to the GPIO mapping.
 
 ## 7. No-Change Confirmation
