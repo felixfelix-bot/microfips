@@ -63,3 +63,71 @@ Either way: **silently corrupt packets pass CRC**. Critical for mesh integrity.
 - Long-range fallback: LoRa SF12 (sub-GHz)
 - Do NOT use FLRC-1300/650/325 until byte alignment is fixed
 - Add CRC-16 validation of full payload before accepting mesh packets — do not trust radio-level CRC alone
+
+---
+
+## UPDATE: Range-Tests Track Has Fixed All 3 Bugs (2026-07-24)
+
+Commit `9b740aa` from balloon-range-tests implements exactly the fixes predicted above:
+
+### Fix 1: Dynamic Sync Header Search
+- LR2021 prepends framing bytes before payload in FIFO
+- Sync header 0xA5 0x5A 0x42 0x24 NOT at byte 0
+- RX now scans for sync header dynamically, sets gpsOff = foundOffset + 4
+- Walk test evidence confirmed: FLRC first bytes ≠ sync header
+
+### Fix 2: App-Layer CRC-16 (CCITT 0x1021)
+- TX computes CRC-16 over payload bytes 4-21, writes to bytes 29-30
+- RX verifies CRC, logs APP_CRC_FAIL on mismatch
+- PHASE_RESULT now reports garbage count alongside crc_err
+
+### Fix 3: RX FIFO Clear Before Re-Arm
+- `rfClearRxFifo()` existed but was never called
+- Now called after every packet, CRC error, and other IRQ
+- Prevents stale data from corrupting next packet read
+
+### Also: GPS range sanity check
+- Rejects impossible values (|lat|>90, |lon|>180, sats>50)
+
+---
+
+## Impact on FIPS LR2021 Transport Code (Code Audit)
+
+Audited `crates/microfips-esp-transport/src/` against range-tests fixes.
+
+### What FIPS Already Does Right
+- `lr2021_esp_hal.rs`: Uses correct 2-byte opcodes (0x01xx, 0x02xx) — NOT SX1280 1-byte
+- `start_rx()`: Clears RX FIFO before entering RX mode (`OP_CLR_RX_FIFO`)
+- `send_packet()`: Clears TX FIFO before writing
+- CALIBRATE mask = 0x5F (correct, not 0x6F)
+- SET_RX_PATH_HF called (mandatory for 2.4 GHz)
+- Init sequence follows proven RP2040 raw SPI baseline
+
+### CRITICAL: 3 Gaps in FIPS Code
+
+**Gap 1: `read_packet()` is fully stubbed (BLOCKER)**
+`lr2021_esp_hal.rs` lines 316-360: ALL SPI read calls are COMMENTED OUT.
+- `GET_RX_BUFFER_STATUS` read: commented
+- `READ_RX_FIFO` read: commented
+- `GET_PACKET_STATUS` read: commented
+- Returns hardcoded `crc_ok: true`, `length: 0`
+- Root cause: trait defines `read_packet(&self)` but SPI needs `&mut self`
+- Transport layer has NEVER been tested with real radio data
+
+**Gap 2: No app-layer CRC in framing layer**
+`lr2021_framing.rs`: RxFramer pushes raw FIFO bytes with NO integrity check.
+- Comment says "FrameWriter adds 2-byte LE length prefix" — that's framing, not CRC
+- Noise protocol MAC (Poly1305) catches corruption at protocol layer
+- BUT: corrupt radio packets waste airtime and cause handshake timeouts
+- Range-tests proved hardware CRC passes garbage — must not trust it
+
+**Gap 3: No FIFO clear on CRC error / other IRQ paths**
+`lr2021_transport.rs` recv flow: calls `start_rx()` which clears FIFO.
+BUT: on CRC_ERROR IRQ or other IRQ sources, transport may not clear FIFO
+before re-arming. Range-tests showed this causes stale data corruption.
+
+### Action Items for FIPS Track
+1. **Implement `read_packet()`** — fix trait to `&mut self` or use RefCell wrapper
+2. **Add CRC-16 (CCITT 0x1021) to framing layer** — TX computes over payload, RX verifies
+3. **Clear RX FIFO on ALL IRQ paths** — not just successful RX, also CRC_ERROR and timeout
+4. **Test with real hardware** — current code has never received a real packet
