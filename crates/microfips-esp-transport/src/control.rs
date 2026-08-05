@@ -91,6 +91,40 @@ fn read_byte() -> u8 {
     }
 }
 
+// --- ESP32-C3: UART0 register access (same approach as ESP32-D0WD) ---
+#[cfg(feature = "esp32c3")]
+const UART_FIFO_REG: *mut u32 = 0x6004_3000 as *mut u32;
+#[cfg(feature = "esp32c3")]
+const UART_STATUS_REG: *const u32 = (0x6004_3000 + 0x1C) as *const u32;
+#[cfg(feature = "esp32c3")]
+const GPIO_FUNC_IN_SEL_BASE: usize = 0x6000_4000;
+
+#[cfg(feature = "esp32c3")]
+fn init_rx() {
+    // SAFETY: Writing to GPIO_FUNC_IN_SEL_BASE+4*5 to route UART0 RX through GPIO5's
+    // GPIO matrix input select. Fixed memory-mapped address per ESP32-C3 TRM §4.2.
+    // Called once during init before control_task reads from UART.
+    unsafe {
+        let gpio_in_sel = (GPIO_FUNC_IN_SEL_BASE + 4 * 5) as *mut u32;
+        write_volatile(gpio_in_sel, 3u32 | (1 << 7));
+    }
+}
+
+#[cfg(feature = "esp32c3")]
+fn rx_available() -> bool {
+    // SAFETY: Reading from UART_STATUS_REG, a fixed memory-mapped address (ESP32-C3 TRM §13).
+    // 32-bit aligned read is atomic. control_task has exclusive access to UART0 RX.
+    let status = unsafe { read_volatile(UART_STATUS_REG) };
+    (status & 0xFF) != 0
+}
+
+#[cfg(feature = "esp32c3")]
+fn read_byte() -> u8 {
+    // SAFETY: Reading from UART_FIFO_REG, a fixed memory-mapped address (ESP32-C3 TRM §13).
+    // 32-bit aligned read is atomic. control_task has exclusive access to UART0 RX.
+    (unsafe { read_volatile(UART_FIFO_REG) } & 0xFF) as u8
+}
+
 static PEER_PUB_CELL: StaticCell<[u8; 33]> = StaticCell::new();
 static PEER_PUB_READY: AtomicBool = AtomicBool::new(false);
 static PEER_PUB_PTR: AtomicPtr<[u8; 33]> = AtomicPtr::new(null_mut());

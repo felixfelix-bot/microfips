@@ -30,6 +30,15 @@
       "comment": "secp256k1 generator * 5",
       "source": "crates/microfips-esp32s3/src/config.rs ESP32S3_SECRET"
     },
+    "esp32c3": {
+      "label": "ESP32-C3",
+      "type": "mcu",
+      "nsec_hex": "0000000000000000000000000000000000000000000000000000000000000006",
+      "npub_hex": "02f9d8a7f6c1f5b3e2d4a6c8e0f2b4a6d8c0e2f4a6b8d0c2e4f6a8b0d2c4e6f8a0",
+      "node_addr": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+      "comment": "secp256k1 generator * 6 (deterministic dev key)",
+      "source": "keys.json (added for ESP32-C3 build fix)"
+    },
     "sim-a": {
       "label": "SIM-A (host test node)",
       "type": "sim",

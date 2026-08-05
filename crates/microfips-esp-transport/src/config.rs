@@ -114,15 +114,24 @@ pub const DEVICE_NSEC: [u8; 32] = microfips_core::hex::hex_bytes_32(env!("DEVICE
 pub const DEVICE_NSEC: [u8; 32] =
     microfips_core::hex::hex_bytes_32(env!("DEVICE_NSEC_HEX_esp32s3"));
 
+#[cfg(feature = "esp32c3")]
+pub const DEVICE_NSEC: [u8; 32] =
+    microfips_core::hex::hex_bytes_32(env!("DEVICE_NSEC_HEX_esp32c3"));
+
 #[cfg(all(feature = "esp32", feature = "ble"))]
 pub const BLE_DEVICE_NAME: &str = "microfips-esp32";
 #[cfg(all(feature = "esp32s3", feature = "ble"))]
 pub const BLE_DEVICE_NAME: &str = "microfips-esp32s3";
+#[cfg(all(feature = "esp32c3", feature = "ble"))]
+pub const BLE_DEVICE_NAME: &str = "microfips-c3";
 
 #[cfg(feature = "esp32")]
 pub const DEVICE_NAME: &str = "microfips-esp32";
 #[cfg(feature = "esp32s3")]
 pub const DEVICE_NAME: &str = "microfips-esp32s3";
+
+#[cfg(feature = "esp32c3")]
+pub const DEVICE_NAME: &str = "microfips-c3";
 
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 #[cfg(feature = "esp32")]
@@ -132,11 +141,19 @@ pub const UART0_BASE: usize = 0x3FF4_0000;
 pub const UART0_BASE: usize = 0x6000_0000;
 
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(feature = "esp32c3")]
+pub const UART0_BASE: usize = 0x6004_3000;
+
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 #[cfg(feature = "esp32")]
 pub const GPIO_FUNC_IN_SEL_BASE: usize = 0x3FF4_4350;
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 #[cfg(feature = "esp32s3")]
 pub const GPIO_FUNC_IN_SEL_BASE: usize = 0x6000_9000;
+
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(feature = "esp32c3")]
+pub const GPIO_FUNC_IN_SEL_BASE: usize = 0x6000_4000;
 
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 #[cfg(feature = "esp32")]
@@ -145,6 +162,10 @@ pub const UART_RX_GPIO_NUM: u32 = 3;
 #[cfg(feature = "esp32s3")]
 pub const UART_RX_GPIO_NUM: u32 = 44;
 
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(feature = "esp32c3")]
+pub const UART_RX_GPIO_NUM: u32 = 5;
+
 // Reset register address (RTC_CNTL_OPTIONS0_REG)
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 #[cfg(feature = "esp32")]
@@ -152,6 +173,10 @@ pub const RESET_REGISTER: usize = 0x3FF4_8000;
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 #[cfg(feature = "esp32s3")]
 pub const RESET_REGISTER: usize = 0x6000_8000;
+
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(feature = "esp32c3")]
+pub const RESET_REGISTER: usize = 0x6000_7000;
 
 #[cfg(feature = "wifi")]
 pub const WIFI_SSID: &str = match option_env!("WIFI_SSID") {
