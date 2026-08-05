@@ -2183,6 +2183,7 @@ dependencies = [
  "embassy-time",
  "microfips-core",
  "microfips-protocol",
+ "portable-atomic",
  "static_cell",
 ]
 
