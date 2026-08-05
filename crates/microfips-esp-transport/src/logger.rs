@@ -1,31 +1,10 @@
-#![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi", feature = "esp-now"))]
 
-use log::{Level, LevelFilter, Log, Metadata, Record};
-
-struct UartLogger;
-
-static LOGGER: UartLogger = UartLogger;
-
-impl Log for UartLogger {
-    fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= Level::Trace
-    }
-
-    fn log(&self, record: &Record) {
-        if self.enabled(record.metadata()) {
-            esp_println::println!(
-                "[{} {}] {}",
-                record.level(),
-                record.module_path().unwrap_or("?"),
-                record.args()
-            );
-        }
-    }
-
-    fn flush(&self) {}
-}
-
+/// Initialize the logger using esp-println's built-in log integration.
+///
+/// On targets without atomic CAS (e.g. ESP32-C3 RISC-V), `log::set_logger`
+/// is unavailable. `esp_println::logger::init_logger` uses the `_racy`
+/// variants which work on all platforms.
 pub fn init() {
-    log::set_logger(&LOGGER).unwrap();
-    log::set_max_level(LevelFilter::Info);
+    esp_println::logger::init_logger(log::LevelFilter::Info);
 }
