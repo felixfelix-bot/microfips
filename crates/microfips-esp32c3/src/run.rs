@@ -29,25 +29,6 @@ pub async fn run_uart_node(
     runner::run_node(transport, trng_source, trng, &mut led, VPS_NPUB, NodeOpts::default()).await
 }
 
-pub async fn run_usb_node(
-    gpio2: esp_hal::peripherals::GPIO2<'static>,
-    usb_device: esp_hal::peripherals::USB_DEVICE<'static>,
-    rng_periph: esp_hal::peripherals::RNG<'static>,
-    adc1: esp_hal::peripherals::ADC1<'static>,
-) -> ! {
-    use esp_hal::usb_serial_jtag::UsbSerialJtag;
-    use microfips_esp_transport::usb_transport::UsbTransport;
-
-    let mut led = runner::make_led(gpio2);
-    let (trng_source, trng) = runner::init_trng(rng_periph, adc1);
-
-    let usb = UsbSerialJtag::new(usb_device).into_async();
-    let (rx, tx) = usb.split();
-    let transport = UsbTransport { tx, rx };
-
-    runner::run_node(transport, trng_source, trng, &mut led, VPS_NPUB, NodeOpts::default()).await
-}
-
 #[cfg(feature = "ble")]
 pub use microfips_esp_transport::run_tasks::run_ble_node;
 

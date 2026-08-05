@@ -8,7 +8,7 @@ description = "Minimal FIPS leaf node on ESP32-C3"
 name = "microfips_esp32c3"
 
 [features]
-default = ["wifi"]
+default = []
 ble = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/ble"]
 l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/l2cap"]
 wifi = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transport/wifi"]
@@ -47,7 +47,7 @@ microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
 microfips-service = { path = "../microfips-service" }
 rand_core = { workspace = true }
 esp-hal = { workspace = true, features = ["esp32c3", "unstable"] }
-esp-rtos = { workspace = true, features = ["esp32c3", "embassy", "esp-alloc", "esp-radio"] }
+esp-rtos = { workspace = true, features = ["esp32c3", "embassy", "esp-alloc"] }
 esp-bootloader-esp-idf = { workspace = true, features = ["esp32c3"] }
 embassy-time = { workspace = true }
 embassy-futures = { workspace = true }
