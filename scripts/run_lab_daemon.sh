@@ -17,13 +17,30 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 if [[ ! -f "$CONFIG" ]]; then
     # Materialize the runtime config from the template: the daemon identity
-    # is DERIVED (lab_keygen G*8) at launch, never committed (issue #134).
-    NSEC_HEX=$(python3 "$REPO_DIR/tools/lab_keygen.py" 8 \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin)["nsec_hex"])')
+    # is DERIVED at launch, never committed (issue #134). Since 2026-09-05
+    # the standard daemon's identity is salt-derived (LAB_KEY_SALT in .env,
+    # high-entropy, not publicly derivable — the G*8 days are over); the
+    # generated config keeps working once materialized, so an existing
+    # $CONFIG with the old identity is left untouched (deliberate: rotate
+    # by deleting the config).
+    ENV_FILE="$REPO_DIR/.env"
+    if [[ -f "$ENV_FILE" ]]; then
+        LAB_KEY_SALT=$(grep -E '^LAB_KEY_SALT=' "$ENV_FILE" | cut -d= -f2)
+        export LAB_KEY_SALT
+    fi
+    if [[ -n "${LAB_KEY_SALT:-}" ]]; then
+        NSEC_HEX=$(python3 "$REPO_DIR/tools/lab_keygen.py" --salt lab-daemon \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["nsec_hex"])')
+        ID_SRC="salted (LAB_KEY_SALT)"
+    else
+        NSEC_HEX=$(python3 "$REPO_DIR/tools/lab_keygen.py" 8 \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["nsec_hex"])')
+        ID_SRC="G*8 (LEGACY public identity — set LAB_KEY_SALT in .env!)"
+    fi
     mkdir -p "$(dirname "$CONFIG")"
     sed "s/__LAB_DAEMON_NSEC__/$NSEC_HEX/" \
         "$REPO_DIR/tools/fips-lab.yaml" > "$CONFIG"
-    echo "generated $CONFIG (identity: lab_keygen G*8)"
+    echo "generated $CONFIG (identity: $ID_SRC)"
 fi
 if grep -q '__LAB_DAEMON_NSEC__' "$CONFIG"; then
     echo "ERROR: $CONFIG still contains the __LAB_DAEMON_NSEC__ placeholder" >&2
