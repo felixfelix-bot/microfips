@@ -1835,6 +1835,22 @@ device-registry.json and override at build time (`DEVICE_NSEC_HEX_esp32s3=...` e
 microfips-build env-override feature). The daemon peers pin via
 `DEVICE_NPUB_HEX_vps=<lab-daemon npub>`.
 
+### Bench identity policy (2026-09-06, #208)
+
+G·N keys are PUBLIC by design (reproducible interop, golden vectors, CI
+identities G·20-23 — never change those). But bench scenarios PUBLISH
+results (verdicts, console logs, issue comments carry npubs/node addrs),
+so scenario runs use **per-run identities**: fips-lab `BenchIdentities`
+derives fresh node+daemon keys each run via `lab_keygen.py --seed
+<run-seed> <label>` (HMAC-SHA256 → scalar; seed recorded only in the run
+dir's `identities.json`, publics only). Published npubs are single-use
+and dead when the run ends. Long-lived non-published roles (the standard
+lab daemon) use `lab_keygen.py --salt <label>` keyed by `LAB_KEY_SALT`
+(.env). Migrated: the nightly trio + bench_xx; other scenarios migrate
+when next touched. Consequence for debugging: a per-run npub in a log
+maps to a role ONLY via that run's identities.json — the G·N
+"see npub, know board" shortcut no longer applies to migrated scenarios.
+
 ### Lab daemon security checklist (run before exposing any test daemon)
 
 1. Isolated `--config` with explicit deterministic nsec — NEVER the workstation's
