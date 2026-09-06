@@ -1186,6 +1186,13 @@ Encrypted payloads are shown as opaque hex — no key material needed.
 **CRITICAL: Do NOT use `pkill -f` patterns.** They kill the current SSH session running
 the test. Only use `kill $SPECIFIC_PID`. Use `disown` on background SSH sessions.
 
+**Multi-session coordination (2026-09-06):** more than one agent session works this
+bench host. Before bench/device work: `python3 -m tollgate_lab.session_registry status`
+(live sessions, their claimed resources/PIDs, LOST = a session died mid-work); long
+runs should `session_begin()` + `add_pid()` their children; killing another session's
+processes goes through `lab-kill <session-name>` (scoped), never patterns. Full stack +
+checklist: hackathon-tooling `patterns/testing/multi-session-coordination.md`.
+
 ### Hardware testing procedure (CRITICAL — read before every hardware test)
 
 **Pipeline startup order matters.** The MCU's `wait_connection()` blocks until a USB
