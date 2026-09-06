@@ -97,6 +97,13 @@ pub struct FspDualHandler<A = NoopFspApp, const APP_BUF: usize = 1024> {
     pub test_ping: bool,
     pub app: A,
     app_buf: [u8; APP_BUF],
+    /// Retry cache: the composed SessionSetup datagram from the last Idle
+    /// send. The AwaitingAck retry RESENDS these identical bytes (the
+    /// initiator's Noise state is consumed after the first send and cannot
+    /// be rebuilt without fresh entropy; a byte-identical resend is also
+    /// what the daemon's duplicate-msg1 path answers idempotently — the
+    /// bbfa864 class). Without it the retry died permanently and silently.
+    last_setup: Option<([u8; SESSION_DATAGRAM_BODY_SIZE + 512], usize)>,
 }
 
 impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
@@ -113,6 +120,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             test_ping: false,
             app,
             app_buf: [0u8; APP_BUF],
+            last_setup: None,
         }
     }
 
@@ -146,6 +154,7 @@ impl<A, const APP_BUF: usize> FspDualHandler<A, APP_BUF> {
             test_ping: false,
             app,
             app_buf: [0u8; APP_BUF],
+            last_setup: None,
         }
     }
 
@@ -552,13 +561,27 @@ impl<A: FspAppHandler, const APP_BUF: usize> NodeHandler for FspDualHandler<A, A
                 resp[..SESSION_DATAGRAM_BODY_SIZE].copy_from_slice(&dg_body);
                 resp[SESSION_DATAGRAM_BODY_SIZE..SESSION_DATAGRAM_BODY_SIZE + setup_len]
                     .copy_from_slice(&setup_buf[..setup_len]);
+                let mut cached = ([0u8; SESSION_DATAGRAM_BODY_SIZE + 512], dg_len);
+                cached.0[..dg_len].copy_from_slice(&resp[..dg_len]);
+                self.last_setup = Some(cached);
                 self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
                 HandleResult::SendDatagram(dg_len)
             }
             FspInitiatorState::AwaitingAck => {
-                fsp.reset();
-                self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
-                HandleResult::None
+                // Retry = resend the IDENTICAL setup (see last_setup). The
+                // old reset()-then-rebuild path died permanently: reset
+                // nulls the consumed Noise initiator, the Idle rebuild
+                // then errored silently with no re-arm — one lost setup
+                // killed the session machinery (2026-09-05 bench_xx flake).
+                if let Some((buf, len)) = &self.last_setup {
+                    let len = *len;
+                    resp[..len].copy_from_slice(&buf[..len]);
+                    self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
+                    HandleResult::SendDatagram(len)
+                } else {
+                    self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
+                    HandleResult::None
+                }
             }
             FspInitiatorState::AwaitingEstablished => {
                 self.fsp_timer = Some(Instant::now() + Duration::from_secs(FSP_RETRY_SECS));
@@ -807,5 +830,57 @@ mod tests {
             }
             other => panic!("unexpected on_tick result: {:?}", other),
         }
+    }
+
+    #[test]
+    fn on_tick_awaiting_ack_resends_identical_setup() {
+        // The retry arm used to reset() the initiator — nulling the
+        // consumed Noise state — so the NEXT Idle arm errored silently
+        // (InvalidState, no re-arm): one lost SessionSetup killed the
+        // session machinery permanently (bench_xx flake 2026-09-05:
+        // fsp_setup_sent=1, zero retries, nothing logged). The retry must
+        // RESEND the identical setup bytes — the daemon's duplicate-msg1
+        // path answers a byte-identical msg1 idempotently (bbfa864 class).
+        let mut handler: FspDualHandler<_, 1024> = FspDualHandler::new_dual(
+            STM32_NSEC,
+            [0x11; 32],
+            [0x22; 32],
+            &test_target_pub(),
+            [0x33; 16],
+            [0x01, 0, 0, 0, 0, 0, 0, 0],
+            NoopFspApp,
+        );
+        let mut resp = [0u8; 512];
+        let first = match handler.on_tick(&mut resp) {
+            HandleResult::SendDatagram(len) => resp[..len].to_vec(),
+            other => panic!("unexpected on_tick result: {:?}", other),
+        };
+        // No ack arrives; the retry tick fires:
+        match handler.on_tick(&mut resp) {
+            HandleResult::SendDatagram(len) => {
+                assert_eq!(
+                    &resp[..len],
+                    &first[..],
+                    "retry must resend byte-identical setup"
+                );
+            }
+            other => panic!("retry on_tick must resend the setup, got {:?}", other),
+        }
+        // And it keeps retrying — not a one-shot:
+        match handler.on_tick(&mut resp) {
+            HandleResult::SendDatagram(len) => {
+                assert_eq!(&resp[..len], &first[..], "third attempt must also resend")
+            }
+            other => panic!("third on_tick must resend, got {:?}", other),
+        }
+        assert!(
+            handler.fsp_timer.is_some(),
+            "timer must stay armed while retrying"
+        );
+        assert_eq!(
+            handler.initiator.as_ref().unwrap().state(),
+            FspInitiatorState::AwaitingAck,
+            "resend must keep the state machine coherent for the ack"
+        );
     }
 }
