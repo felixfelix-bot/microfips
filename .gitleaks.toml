@@ -1,0 +1,26 @@
+# Gitleaks allowlist — every entry justified.
+title = "microfips gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Golden vector files: deterministic noise/crypto test vectors (scalar 0x11/0xaa-class seeds, published handshake bytes) — the regression contract by design"
+paths = [
+  '''crates/microfips-core/tests/golden_vectors\.json''',
+  '''specs/fips/golden_vectors\.json''',
+]
+
+[[allowlists]]
+description = "keys.json exists only in history: committed device key literals retired in 190a81f (issue #134 Tier 1) in favor of a public-only device-registry.json; devices re-keyed as part of that retirement"
+paths = [
+  '''keys\.json''',
+]
+
+[[allowlists]]
+description = "README/architecture docs and the BLE pipeline smoke script document lab_keygen demo keypairs (published test seeds, e.g. 0011..EEFF class)"
+paths = [
+  '''README\.md''',
+  '''docs/architecture\.md''',
+  '''tools/test-ble-pipeline\.sh''',
+]
