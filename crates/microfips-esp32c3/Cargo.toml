@@ -9,8 +9,14 @@ name = "microfips_esp32c3"
 
 [features]
 default = ["wifi"]
-wifi = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transport/wifi", "microfips-esp-common/wifi"]
-espnow = ["microfips-esp-transport/espnow", "dep:esp-println", "dep:esp-radio", "esp-radio/esp-now", "esp-radio/unstable"]
+wifi = ["dep:esp-radio", "dep:esp-println", "log", "microfips-esp-transport/wifi", "microfips-esp-common/wifi"]
+espnow = ["microfips-esp-transport/espnow", "dep:esp-println", "dep:esp-radio", "log", "esp-radio/esp-now", "esp-radio/unstable"]
+# NOTE: `log` must be declared explicitly. Using `dep:log` inside another
+# feature suppresses the implicit `log` feature, which silently made every
+# `#[cfg(feature = "log")]` block in run.rs dead code (no logger install,
+# no MAC/boot banner on serial). Keep this feature and reference it as
+# `"log"` from wifi/espnow.
+log = ["dep:log"]
 
 [[bin]]
 name = "microfips-esp32c3-wifi"

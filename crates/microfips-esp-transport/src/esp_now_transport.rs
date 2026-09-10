@@ -23,7 +23,7 @@ use microfips_protocol::transport::Transport;
 pub const ESP_NOW_PAYLOAD_MAX: usize = ESP_NOW_MAX_DATA_LEN;
 
 /// Default WiFi channel for ESP-NOW mesh.
-const ESPNOW_CHANNEL: u8 = 1;
+pub const ESPNOW_CHANNEL: u8 = 1;
 
 /// MAC address length (6 bytes).
 pub const MAC_LEN: usize = 6;

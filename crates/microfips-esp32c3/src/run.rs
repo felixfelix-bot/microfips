@@ -61,7 +61,7 @@ pub async fn run_espnow_node(
     use microfips_esp_transport::control::{self, init_control};
 
     #[cfg(feature = "log")]
-    logger::init(log::LevelFilter::Info);
+    logger::init();
 
     microfips_esp_transport::heap::init();
     let mut led = runner::make_led(gpio2);
