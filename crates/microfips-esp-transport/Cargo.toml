@@ -16,7 +16,7 @@ log = ["dep:log"]
 ble = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "log"]
 l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "log"]
 wifi = ["dep:esp-radio", "dep:embassy-net", "dep:esp-println", "log", "microfips-esp-common/wifi"]
-espnow = ["dep:esp-println", "log"]
+espnow = ["dep:esp-radio", "dep:esp-println", "log", "esp-radio/esp-now"]
 
 [build-dependencies]
 microfips-build = { workspace = true }

@@ -12,6 +12,6 @@ async fn main(spawner: embassy_executor::Spawner) {
     esp_rtos::start(timg0.timer0, sw_ints.software_interrupt0);
 
     microfips_esp32c3::run::run_espnow_node(
-        spawner, peripherals.GPIO2, peripherals.RNG, peripherals.ADC1,
+        spawner, peripherals.GPIO2, peripherals.RNG, peripherals.ADC1, peripherals.WIFI,
     ).await;
 }

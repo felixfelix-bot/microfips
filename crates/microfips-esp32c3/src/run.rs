@@ -53,6 +53,7 @@ pub async fn run_espnow_node(
     gpio2: esp_hal::peripherals::GPIO2<'static>,
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
+    wifi: esp_hal::peripherals::WIFI<'static>,
 ) -> ! {
     use microfips_esp_transport::esp_now_transport::{self, EspNowTransport, MacAddress};
     use microfips_esp_transport::logger;
@@ -66,8 +67,8 @@ pub async fn run_espnow_node(
     let mut led = runner::make_led(gpio2);
     let (trng_source, trng) = runner::init_trng(rng_periph, adc1);
 
-    // Initialize ESP-NOW
-    let (mut transport, local_mac) = EspNowTransport::init()
+    // Initialize ESP-NOW via esp-radio (WiFi radio init + EspNow safe wrapper)
+    let (mut transport, local_mac, _wifi_controller) = EspNowTransport::init(wifi)
         .expect("ESP-NOW init failed");
 
     #[cfg(feature = "log")]
@@ -81,7 +82,8 @@ pub async fn run_espnow_node(
         embassy_time::Timer::after_millis(100).await;
     }
 
-    // Add self as broadcast peer (send/receive broadcast messages)
+    // Add broadcast peer (esp-radio already adds it by default, but
+    // we add it explicitly for clarity and in case the default changes)
     transport.add_peer(MacAddress::BROADCAST)
         .expect("Failed to add broadcast peer");
 

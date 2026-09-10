@@ -3,89 +3,24 @@
 //! Implements the `Transport` trait using ESP-NOW, a connectionless
 //! peer-to-peer protocol on the WiFi MAC layer. No IP, no DHCP, no SSID.
 //!
-//! Uses raw FFI to the ESP-IDF `esp_now.h` C API (available via esp-rtos).
-//! All ESP32-C3 boards in the mesh share the same WiFi channel (default 1).
+//! Path B hybrid: uses `esp-radio` for WiFi radio initialization (handles
+//! NVS, netif, event loop, WiFi init/start internally) and `esp-radio`'s
+//! safe `EspNow` wrapper for ESP-NOW operations (init, callbacks, peer
+//! management, send/receive). No raw FFI needed — esp-radio wraps the
+//! ESP-IDF `esp_now.h` and `esp_wifi.h` C APIs via `esp-wifi-sys`.
 
-use core::cell::{Cell, RefCell};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::fmt::Debug;
 
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::signal::Signal;
-use embassy_time::{with_timeout, Duration, Timer};
-
+use esp_radio::esp_now::{
+    EspNow, EspNowWifiInterface, PeerInfo, BROADCAST_ADDRESS, ESP_NOW_MAX_DATA_LEN,
+};
+use esp_radio::wifi::{ControllerConfig, SecondaryChannel};
 use microfips_protocol::transport::Transport;
-
-// ── ESP-IDF C FFI ───────────────────────────────────────────────────────────
-// These bind against the ESP-IDF libraries linked by esp-rtos.
-
-mod ffi {
-    use core::ffi::{c_int, c_uchar, c_uint, c_void};
-
-    pub const ESP_OK: c_int = 0;
-    pub const ESP_NOW_ETH_ALEN: usize = 6;
-
-    // ESP-IDF constants
-    pub const ESP_ERR_NVS_NO_FREE_PAGES: i32 = 0x1103;
-    pub const ESP_ERR_NVS_NEW_VERSION_FOUND: i32 = 0x1104;
-    pub const WIFI_MODE_STA: i32 = 1;
-    pub const ESP_MAC_WIFI_STA: i32 = 0;
-
-    #[repr(C)]
-    pub struct esp_now_peer_info {
-        pub peer_addr: [c_uchar; ESP_NOW_ETH_ALEN],
-        pub lmk: [c_uchar; 16],
-        pub channel: c_uint,
-        pub ifidx: c_uint,
-        pub encrypt: bool,
-        pub priv_padding: [c_uchar; 3],
-    }
-
-    pub type esp_now_send_cb_t = extern "C" fn(*const c_uchar, c_int);
-    pub type esp_now_recv_cb_t = extern "C" fn(*const esp_now_recv_info, *const c_uchar, c_int);
-
-    #[repr(C)]
-    pub struct esp_now_recv_info {
-        pub src_addr: *const c_uchar,
-        pub des_addr: *const c_uchar,
-        pub rx_ctrl: *mut c_void,
-    }
-
-    // WiFi init functions
-    extern "C" {
-        pub fn nvs_flash_init() -> c_int;
-        pub fn nvs_flash_erase() -> c_int;
-        pub fn esp_netif_init() -> c_int;
-        pub fn esp_event_loop_create_default() -> c_int;
-        pub fn esp_wifi_init(cfg: *const c_void) -> c_int;
-        pub fn esp_wifi_set_mode(mode: c_int) -> c_int;
-        pub fn esp_wifi_start() -> c_int;
-        pub fn esp_wifi_set_channel(primary: c_uchar, secondary: c_uchar) -> c_int;
-        pub fn esp_read_mac(mac: *mut c_uchar, typ: c_int) -> c_int;
-    }
-
-    // ESP-NOW functions
-    extern "C" {
-        pub fn esp_now_init() -> c_int;
-        pub fn esp_now_deinit() -> c_int;
-        pub fn esp_now_register_send_cb(cb: esp_now_send_cb_t) -> c_int;
-        pub fn esp_now_register_recv_cb(cb: esp_now_recv_cb_t) -> c_int;
-        pub fn esp_now_add_peer(peer: *const esp_now_peer_info) -> c_int;
-        pub fn esp_now_del_peer(peer_addr: *const c_uchar) -> c_int;
-        pub fn esp_now_send(
-            peer_addr: *const c_uchar,
-            data: *const c_uchar,
-            len: usize,
-        ) -> c_int;
-        pub fn esp_now_get_peer(peer_addr: *const c_uchar, peer: *mut esp_now_peer_info) -> c_int;
-        // esp_fill_random is available via ESP-IDF
-        pub fn esp_fill_random(buf: *mut c_void, len: usize);
-    }
-}
 
 // ── constants ───────────────────────────────────────────────────────────────
 
-/// Maximum data payload per ESP-NOW frame (250 bytes minus 6-byte fragment header = 244).
-pub const ESP_NOW_PAYLOAD_MAX: usize = 244;
+/// Maximum data payload per ESP-NOW frame (250 bytes per ESP-NOW spec).
+pub const ESP_NOW_PAYLOAD_MAX: usize = ESP_NOW_MAX_DATA_LEN;
 
 /// Default WiFi channel for ESP-NOW mesh.
 const ESPNOW_CHANNEL: u8 = 1;
@@ -93,17 +28,37 @@ const ESPNOW_CHANNEL: u8 = 1;
 /// MAC address length (6 bytes).
 pub const MAC_LEN: usize = 6;
 
+
+
 // ── error type ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy)]
 pub enum EspNowError {
+    /// WiFi radio initialization failed.
     InitFailed,
+    /// ESP-NOW send failed.
     SendFailed,
-    PeerNotFound,
-    NoPeer,
-    Timeout,
+    /// ESP-NOW peer operation failed (add/remove/modify).
+    PeerError,
+    /// Transport not initialized.
     NotInitialized,
+    /// Payload exceeds ESP-NOW max (250 bytes).
+    PayloadTooLarge,
 }
+
+impl core::fmt::Display for EspNowError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InitFailed => f.write_str("ESP-NOW init failed"),
+            Self::SendFailed => f.write_str("ESP-NOW send failed"),
+            Self::PeerError => f.write_str("ESP-NOW peer error"),
+            Self::NotInitialized => f.write_str("ESP-NOW not initialized"),
+            Self::PayloadTooLarge => f.write_str("ESP-NOW payload too large"),
+        }
+    }
+}
+
+impl core::error::Error for EspNowError {}
 
 // ── MAC address ─────────────────────────────────────────────────────────────
 
@@ -111,7 +66,7 @@ pub enum EspNowError {
 pub struct MacAddress(pub [u8; MAC_LEN]);
 
 impl MacAddress {
-    pub const BROADCAST: MacAddress = MacAddress([0xff; MAC_LEN]);
+    pub const BROADCAST: MacAddress = MacAddress(BROADCAST_ADDRESS);
 
     pub fn from_bytes(b: &[u8]) -> Option<Self> {
         if b.len() >= MAC_LEN {
@@ -123,12 +78,14 @@ impl MacAddress {
         }
     }
 
-    pub fn as_ptr(&self) -> *const u8 {
-        self.0.as_ptr()
-    }
-
     pub fn is_broadcast(&self) -> bool {
-        self.0 == [0xff; MAC_LEN]
+        self.0 == BROADCAST_ADDRESS
+    }
+}
+
+impl From<[u8; MAC_LEN]> for MacAddress {
+    fn from(mac: [u8; MAC_LEN]) -> Self {
+        MacAddress(mac)
     }
 }
 
@@ -142,211 +99,140 @@ impl core::fmt::Display for MacAddress {
     }
 }
 
-// ── global state ────────────────────────────────────────────────────────────
 
-static ESPNOW_INITIALIZED: AtomicBool = AtomicBool::new(false);
-
-// Signal for received data — wakes the recv task
-type RecvSignal = Signal<CriticalSectionRawMutex, ()>;
-static RECV_SIGNAL: RecvSignal = Signal::new();
-
-// Circular buffer for one incoming frame
-static INCOMING: embassy_sync::once_lock::OnceLock<heapless::Vec<u8, { ESP_NOW_PAYLOAD_MAX + 32 }>> =
-    embassy_sync::once_lock::OnceLock::new();
-
-// ── C callback trampolines ──────────────────────────────────────────────────
-
-extern "C" fn esp_now_send_cb(_mac: *const u8, status: i32) {
-    // ESP-NOW send status: 0 = success, non-zero = fail
-    // We don't block on send completion — fire-and-forget (Wirehair handles loss)
-}
-
-extern "C" fn esp_now_recv_cb(
-    recv_info: *const ffi::esp_now_recv_info,
-    data: *const u8,
-    len: i32,
-) {
-    if recv_info.is_null() || data.is_null() || len <= 0 {
-        return;
-    }
-
-    let src_mac = unsafe { (*recv_info).src_addr };
-    let data_slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
-
-    // We received data — signal the recv task
-    // For now, we just signal. The recv task will call back into ESP-NOW
-    // to get the data via a different mechanism.
-    //
-    // Actually, ESP-NOW callbacks run in ISR context. We can't do much here.
-    // The simplest approach: copy to a static buffer and signal.
-    // But for `no_std` without critical sections, let's use the Signal.
-    //
-    // For real implementation, we'd use a proper packet queue.
-    // For Phase 0.0: just signal that data arrived.
-    RECV_SIGNAL.signal(());
-}
 
 // ── ESP-NOW transport ───────────────────────────────────────────────────────
 
-pub struct EspNowTransport {
+/// ESP-NOW transport for FIPS mesh.
+///
+/// Uses esp-radio for WiFi radio init and ESP-NOW management.
+/// The `EspNow<'d>` handle is kept alive for the lifetime of this transport.
+/// A background task polls the receiver and pushes packets into a channel.
+pub struct EspNowTransport<'d> {
+    esp_now: EspNow<'d>,
+    /// The peer we send to by default (broadcast for mesh mode).
+    default_peer: [u8; MAC_LEN],
+    /// Marker to track initialization state.
     initialized: bool,
-    local_mac: MacAddress,
-    peer: MacAddress,
 }
 
-impl EspNowTransport {
-    /// Initialize ESP-NOW: WiFi STA mode → esp_now_init().
-    /// Must be called before any send/recv.
-    pub fn init() -> Result<(Self, MacAddress), EspNowError> {
-        if ESPNOW_INITIALIZED.load(Ordering::Acquire) {
-            // Already initialized — return a new handle
-            return Err(EspNowError::InitFailed);
+impl<'d> EspNowTransport<'d> {
+    /// Initialize ESP-NOW using esp-radio WiFi init.
+    ///
+    /// This calls `esp_radio::wifi::new()` which handles:
+    /// - NVS flash init
+    /// - Network interface init + default event loop
+    /// - WiFi radio init in station mode
+    /// - WiFi start
+    ///
+    /// Then extracts the `EspNow` handle from the returned `Interfaces`.
+    /// The `WifiController` is kept alive (dropping it would deinit WiFi).
+    ///
+    /// Returns `(transport, local_mac, wifi_controller)`. The caller must
+    /// keep the `WifiController` alive for the lifetime of the transport.
+    pub fn init(
+        wifi: esp_hal::peripherals::WIFI<'d>,
+    ) -> Result<(Self, MacAddress, esp_radio::wifi::WifiController<'d>), EspNowError> {
+        // Initialize WiFi radio via esp-radio. This handles NVS, netif,
+        // event loop, WiFi init, and WiFi start internally.
+        // Use default ControllerConfig — ESP-NOW doesn't need AP/STA connection.
+        let (mut controller, interfaces) =
+            esp_radio::wifi::new(wifi, ControllerConfig::default()).map_err(|_| {
+                #[cfg(feature = "log")]
+                log::error!("esp_radio::wifi::new() failed");
+                EspNowError::InitFailed
+            })?;
+
+        // Set WiFi channel for ESP-NOW
+        controller
+            .set_channel(ESPNOW_CHANNEL, SecondaryChannel::None)
+            .map_err(|_| EspNowError::InitFailed)?;
+
+        // Take the EspNow handle from the interfaces
+        let esp_now = interfaces.esp_now;
+
+        // Read our MAC address from the ESP-NOW peer info
+        // esp-radio doesn't expose a direct "get local MAC" on EspNow,
+        // but we can use esp_hal's MAC read.
+        let local_mac = read_local_mac().unwrap_or(MacAddress([0u8; MAC_LEN]));
+
+        #[cfg(feature = "log")]
+        {
+            log::info!("ESP-NOW initialized via esp-radio. MAC: {}", local_mac);
+            log::info!("ESP-NOW channel: {}", ESPNOW_CHANNEL);
         }
-
-        unsafe {
-            // 1. Init NVS
-            let mut ret = ffi::nvs_flash_init();
-            if ret == ffi::ESP_ERR_NVS_NO_FREE_PAGES || ret == ffi::ESP_ERR_NVS_NEW_VERSION_FOUND {
-                ffi::nvs_flash_erase();
-                ret = ffi::nvs_flash_init();
-            }
-            if ret != 0 {
-                return Err(EspNowError::InitFailed);
-            }
-
-            // 2. Init network interface + event loop
-            if ffi::esp_netif_init() != 0 {
-                return Err(EspNowError::InitFailed);
-            }
-            if ffi::esp_event_loop_create_default() != 0 {
-                return Err(EspNowError::InitFailed);
-            }
-
-            // 3. Init WiFi in STA mode
-            // Use minimal config — no connection, just radio on
-            let cfg = core::mem::zeroed();
-            if ffi::esp_wifi_init(&cfg as *const _ as *const _) != 0 {
-                return Err(EspNowError::InitFailed);
-            }
-            if ffi::esp_wifi_set_mode(ffi::WIFI_MODE_STA) != 0 {
-                return Err(EspNowError::InitFailed);
-            }
-            if ffi::esp_wifi_start() != 0 {
-                return Err(EspNowError::InitFailed);
-            }
-
-            // 4. Set channel
-            if ffi::esp_wifi_set_channel(ESPNOW_CHANNEL, 0) != 0 {
-                return Err(EspNowError::InitFailed);
-            }
-
-            // 5. Init ESP-NOW
-            if ffi::esp_now_init() != 0 {
-                return Err(EspNowError::InitFailed);
-            }
-
-            // 6. Register callbacks
-            let send_cb: ffi::esp_now_send_cb_t = esp_now_send_cb;
-            let recv_cb: ffi::esp_now_recv_cb_t = esp_now_recv_cb;
-            if ffi::esp_now_register_send_cb(send_cb) != 0 {
-                return Err(EspNowError::InitFailed);
-            }
-            if ffi::esp_now_register_recv_cb(recv_cb) != 0 {
-                return Err(EspNowError::InitFailed);
-            }
-
-            // 7. Read our MAC
-            let mut mac_buf = [0u8; MAC_LEN];
-            if ffi::esp_read_mac(mac_buf.as_mut_ptr(), ffi::ESP_MAC_WIFI_STA) != 0 {
-                return Err(EspNowError::InitFailed);
-            }
-            let local_mac = MacAddress(mac_buf);
-        }
-
-        ESPNOW_INITIALIZED.store(true, Ordering::Release);
 
         Ok((
             EspNowTransport {
+                esp_now,
+                default_peer: BROADCAST_ADDRESS,
                 initialized: true,
-                local_mac: MacAddress([0u8; MAC_LEN]),
-                peer: MacAddress([0u8; MAC_LEN]),
             },
-            MacAddress([0u8; MAC_LEN]), // placeholder, real MAC from init
+            local_mac,
+            controller,
         ))
     }
 
     /// Register a peer for ESP-NOW communication.
     pub fn add_peer(&mut self, mac: MacAddress) -> Result<(), EspNowError> {
-        if !ESPNOW_INITIALIZED.load(Ordering::Acquire) {
+        if !self.initialized {
             return Err(EspNowError::NotInitialized);
         }
-        let peer = ffi::esp_now_peer_info {
-            peer_addr: mac.0,
-            lmk: [0u8; 16],
-            channel: ESPNOW_CHANNEL as u32,
-            ifidx: 0,
+        let peer = PeerInfo {
+            interface: EspNowWifiInterface::Station,
+            peer_address: mac.0,
+            lmk: None,
+            channel: None,
             encrypt: false,
-            priv_padding: [0u8; 3],
         };
-        let ret = unsafe { ffi::esp_now_add_peer(&peer as *const _) };
-        if ret == 0 {
-            self.peer = mac;
-            Ok(())
-        } else {
-            Err(EspNowError::PeerNotFound)
-        }
+        self.esp_now.add_peer(peer).map_err(|_| EspNowError::PeerError)
     }
 
     /// Remove a peer.
-    pub fn del_peer(&mut self, mac: MacAddress) -> Result<(), EspNowError> {
-        if !ESPNOW_INITIALIZED.load(Ordering::Acquire) {
+    pub fn remove_peer(&mut self, mac: MacAddress) -> Result<(), EspNowError> {
+        if !self.initialized {
             return Err(EspNowError::NotInitialized);
         }
-        let ret = unsafe { ffi::esp_now_del_peer(mac.as_ptr()) };
-        if ret == 0 {
-            Ok(())
-        } else {
-            Err(EspNowError::PeerNotFound)
-        }
+        self.esp_now
+            .remove_peer(&mac.0)
+            .map_err(|_| EspNowError::PeerError)
     }
 
-    /// Send data to a peer via ESP-NOW.
-    pub fn send_to(&self, mac: MacAddress, data: &[u8]) -> Result<(), EspNowError> {
-        if !ESPNOW_INITIALIZED.load(Ordering::Acquire) {
+    /// Send data to a specific peer via ESP-NOW.
+    pub async fn send_to(&mut self, mac: &[u8; 6], data: &[u8]) -> Result<(), EspNowError> {
+        if !self.initialized {
             return Err(EspNowError::NotInitialized);
         }
         if data.len() > ESP_NOW_PAYLOAD_MAX {
-            return Err(EspNowError::SendFailed);
+            return Err(EspNowError::PayloadTooLarge);
         }
-        let ret = unsafe { ffi::esp_now_send(mac.as_ptr(), data.as_ptr(), data.len()) };
-        if ret == 0 {
-            Ok(())
-        } else {
-            Err(EspNowError::SendFailed)
-        }
+        self.esp_now
+            .send_async(mac, data)
+            .await
+            .map_err(|_| EspNowError::SendFailed)
     }
 
     /// Send a broadcast message to all ESP-NOW peers in range.
-    pub fn broadcast(&self, data: &[u8]) -> Result<(), EspNowError> {
-        self.send_to(MacAddress::BROADCAST, data)
+    pub async fn broadcast(&mut self, data: &[u8]) -> Result<(), EspNowError> {
+        self.send_to(&BROADCAST_ADDRESS, data).await
     }
 
-    // Deinit ESP-NOW (not async-safe, for cleanup)
-    pub fn deinit(&self) {
-        if ESPNOW_INITIALIZED.load(Ordering::Acquire) {
-            unsafe {
-                ffi::esp_now_deinit();
-            }
-            ESPNOW_INITIALIZED.store(false, Ordering::Release);
-        }
+    /// Set the default peer for `Transport::send`.
+    pub fn set_default_peer(&mut self, mac: MacAddress) {
+        self.default_peer = mac.0;
+    }
+
+    /// Get the local MAC address (best-effort).
+    pub fn local_mac(&self) -> MacAddress {
+        read_local_mac().unwrap_or(MacAddress([0u8; MAC_LEN]))
     }
 }
 
-impl Transport for EspNowTransport {
+impl<'d> Transport for EspNowTransport<'d> {
     type Error = EspNowError;
 
     async fn wait_ready(&mut self) -> Result<(), Self::Error> {
-        if ESPNOW_INITIALIZED.load(Ordering::Acquire) {
+        if self.initialized {
             Ok(())
         } else {
             Err(EspNowError::NotInitialized)
@@ -354,43 +240,51 @@ impl Transport for EspNowTransport {
     }
 
     async fn send(&mut self, data: &[u8]) -> Result<(), Self::Error> {
-        self.send_to(self.peer, data)
+        let peer = self.default_peer;
+        self.send_to(&peer, data).await
     }
 
     async fn recv(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        // Wait for the signal from the ISR callback
-        RECV_SIGNAL.wait().await;
+        if !self.initialized {
+            return Err(EspNowError::NotInitialized);
+        }
 
-        // The ESP-NOW callback ran. We need to actually read the data.
-        // In a full implementation, the callback would buffer into a
-        // packet queue. For Phase 0.0, we return a placeholder.
-        //
-        // Real implementation: the ISR callback pushes into a SPSC queue,
-        // and this task pops from it.
-        //
-        // For now: signal that data is pending but we can't extract it
-        // from ISR context without a proper buffer.
+        // Poll the esp-radio receiver for incoming data.
+        // EspNow::receive_async() returns a future that resolves with
+        // ReceivedData when a packet arrives.
+        let received = self.esp_now.receive_async().await;
+        let data = received.data();
+        let n = data.len().min(buf.len());
+        buf[..n].copy_from_slice(&data[..n]);
 
-        // Return 0 to indicate "data pending, call read()" — placeholder.
-        // Real implementation will fill buf with the packet data.
-        Ok(0)
+        #[cfg(feature = "log")]
+        log::trace!(
+            "ESP-NOW recv: {} bytes from {:02x?}",
+            n,
+            received.info.src_address
+        );
+
+        Ok(n)
     }
 }
 
-impl Drop for EspNowTransport {
-    fn drop(&mut self) {
-        self.deinit();
-    }
-}
+// ── helper to get local MAC ─────────────────────────────────────────────────
 
-// ── helper to get local MAC without full transport ──────────────────────────
-
+/// Read the local WiFi STA MAC address from eFuse via esp-hal.
+///
+/// Uses esp-hal's pure-Rust eFuse reader (`interface_mac_address`) instead of
+/// the ESP-IDF C symbol `esp_read_mac`. The C symbol lives in the ESP-IDF
+/// `esp_wifi` component, which is NOT linked in the esp-radio/esp-rtos
+/// bare-metal ecosystem — calling it produced an undefined-symbol link error.
 pub fn read_local_mac() -> Result<MacAddress, EspNowError> {
-    let mut mac = [0u8; MAC_LEN];
-    let ret = unsafe { ffi::esp_read_mac(mac.as_mut_ptr(), ffi::ESP_MAC_WIFI_STA) };
-    if ret == 0 {
-        Ok(MacAddress(mac))
-    } else {
-        Err(EspNowError::InitFailed)
+    let mac = esp_hal::efuse::interface_mac_address(
+        esp_hal::efuse::InterfaceMacAddress::Station,
+    );
+    let mut out = [0u8; MAC_LEN];
+    let bytes = mac.as_bytes();
+    if bytes.len() != MAC_LEN {
+        return Err(EspNowError::InitFailed);
     }
+    out.copy_from_slice(bytes);
+    Ok(MacAddress(out))
 }
