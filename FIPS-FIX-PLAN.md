@@ -91,8 +91,16 @@ exit code: 0
 $ cargo build -p microfips-esp32c3 --target riscv32imc-unknown-none-elf --release
 exit code: 0
 
-# ESP32-S3 regression (SKIPPED — xtensa-esp32s3-none-elf target not installed):
-# Changes use #[cfg(feature = "esp32c3")] guards, S3 path unaffected.
+# ESP32-S3 regression (VERIFIED — PASSES):
+$ source /tmp/espup-export2.sh
+$ cargo +esp-xtensa build -p microfips-esp32s3 --target xtensa-esp32s3-none-elf -Zbuild-std=core,alloc
+exit code: 0
+
+# ESP32-S3 regression fix (commit c8b2511):
+# The shared logger (esp_println::logger::init_logger) requires the esp-println
+# 'log-04' feature. It was only enabled for esp32c3, breaking the S3 build with
+# "cannot find 'logger' in 'esp_println'". Added 'esp-println/log-04' to the
+# esp32s3 feature. Both C3 and S3 builds now pass.
 ```
 
 ## Commits
@@ -104,3 +112,4 @@ exit code: 0
 | `4b6051b` | fix(logger): esp-println built-in logger |
 | `9c1cb04` | fix(build): riscv32imc target in .cargo/config.toml |
 | `820db53` | fix(c3-build): DRAM overflow fix + binary modernization |
+| `c8b2511` | fix(s3-regression): enable esp-println log-04 feature for esp32s3 |
