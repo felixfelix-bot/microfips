@@ -1,7 +1,5 @@
 [workspace]
-members = ["crates/microfips-build", "crates/microfips-core", "crates/microfips-protocol", "crates/microfips-esp-common", "crates/microfips-esp-transport", "crates/microfips-esp32c3"]
-# Temporarily disabled due to ESP32 feature conflicts:
-# "crates/microfips-esp32", "crates/microfips-esp32s3"
+members = ["crates/microfips-build", "crates/microfips-core", "crates/microfips-protocol", "crates/microfips-esp-common", "crates/microfips-esp-transport", "crates/microfips-esp32c3", "crates/microfips-esp32", "crates/microfips-esp32s3"]
 # Host-only crates excluded — they enable std on shared deps (microfips-core/std),
 # which leaks to no_std ESP32 builds via workspace feature unification:
 # "crates/microfips-link", "crates/microfips-sim", "crates/microfips",
@@ -37,4 +35,3 @@ embassy-net = "0.9.0"
 trouble-host = { git = "https://github.com/embassy-rs/trouble", rev = "c103e97ff7d333c2cb76b643477e3c4141d0ff74", features = ["default-packet-pool", "scan", "central"] }
 microfips-build = { path = "crates/microfips-build" }
 critical-section = { version = "1.1.2", default-features = false }
-
