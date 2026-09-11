@@ -3,7 +3,6 @@ use embassy_net::{Config, IpAddress, IpEndpoint, Runner, StackResources};
 use embassy_time::{with_timeout, Duration, Timer};
 use esp_hal::peripherals::WIFI;
 use esp_hal::rng::Trng;
-use esp_radio::wifi::scan::ScanConfig;
 use esp_radio::wifi::sta::StationConfig;
 use esp_radio::wifi::{Config as WifiConfig, Interface, WifiController};
 use microfips_esp_common::config::{VPS_HOST, VPS_PORT, WIFI_DHCP_TIMEOUT_SECS};
@@ -54,8 +53,6 @@ pub async fn build_wifi_transport(
     wifi_password: &str,
 ) -> Result<WifiTransport, WifiInitError> {
     crate::heap::init();
-
-    const MAX_WIFI_RETRIES: u32 = 5;
 
     const MAX_WIFI_RETRIES: u32 = 5;
     const WIFI_RETRY_BASE_SECS: u64 = 30;
