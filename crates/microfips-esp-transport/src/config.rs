@@ -137,8 +137,9 @@ pub const UART0_BASE: usize = 0x3FF4_0000;
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 #[cfg(feature = "esp32s3")]
 pub const UART0_BASE: usize = 0x6000_0000;
+// ESP32-C3 TRM / ESP-IDF soc/reg_base.h: DR_REG_UART_BASE=0x60000000, UART0=(0+i*0x10000)
 #[cfg(feature = "esp32c3")]
-pub const UART0_BASE: usize = 0x6004_0000;
+pub const UART0_BASE: usize = 0x6000_0000;
 
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 #[cfg(feature = "esp32")]
@@ -146,8 +147,9 @@ pub const GPIO_FUNC_IN_SEL_BASE: usize = 0x3FF4_4350;
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 #[cfg(feature = "esp32s3")]
 pub const GPIO_FUNC_IN_SEL_BASE: usize = 0x6000_9000;
+// ESP32-C3 TRM / ESP-IDF gpio_reg.h: GPIO_FUNCn_IN_SEL_CFG_REG = DR_REG_GPIO_BASE(0x60004000) + 0x154 + 4n
 #[cfg(feature = "esp32c3")]
-pub const GPIO_FUNC_IN_SEL_BASE: usize = 0x6000_9000;
+pub const GPIO_FUNC_IN_SEL_BASE: usize = 0x6000_4154;
 
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 #[cfg(feature = "esp32")]
@@ -155,16 +157,20 @@ pub const UART_RX_GPIO_NUM: u32 = 3;
 #[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
 #[cfg(feature = "esp32s3")]
 pub const UART_RX_GPIO_NUM: u32 = 44;
+// ESP32-C3: GPIO19/GPIO18 are USB D-/D+; GPIO5 is a free ADC pin (ADC2_CH0) on C3 devkits
 #[cfg(feature = "esp32c3")]
-pub const UART_RX_GPIO_NUM: u32 = 19;
+pub const UART_RX_GPIO_NUM: u32 = 5;
 
 // Reset register address (RTC_CNTL_OPTIONS0_REG)
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+// Gate matches control.rs (which consumes RESET_REGISTER): espnow builds need it too.
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi", feature = "espnow"))]
 #[cfg(feature = "esp32")]
 pub const RESET_REGISTER: usize = 0x3FF4_8000;
-#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi", feature = "espnow"))]
 #[cfg(feature = "esp32s3")]
 pub const RESET_REGISTER: usize = 0x6000_8000;
+// ESP32-C3 TRM / ESP-IDF rtc_cntl_reg.h: RTC_CNTL_OPTIONS0_REG = DR_REG_RTCCNTL_BASE(0x60008000) + 0x0
+#[cfg(any(feature = "ble", feature = "l2cap", feature = "wifi", feature = "espnow"))]
 #[cfg(feature = "esp32c3")]
 pub const RESET_REGISTER: usize = 0x6000_8000;
 
