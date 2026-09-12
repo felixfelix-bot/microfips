@@ -25,8 +25,6 @@ mod ffi {
     pub const ESP_NOW_ETH_ALEN: usize = 6;
 
     // ESP-IDF constants
-    pub const ESP_ERR_NVS_NO_FREE_PAGES: i32 = 0x1103;
-    pub const ESP_ERR_NVS_NEW_VERSION_FOUND: i32 = 0x1104;
     pub const WIFI_MODE_STA: i32 = 1;
     pub const ESP_MAC_WIFI_STA: i32 = 0;
 
@@ -50,10 +48,10 @@ mod ffi {
         pub rx_ctrl: *mut c_void,
     }
 
-    // WiFi init functions
+    // WiFi init functions.
+    // NOTE: no nvs_flash_init — the esp-radio blob stack ships no NVS and does
+    // not need it (the Rust wifi transport initializes the same blobs without NVS).
     extern "C" {
-        pub fn nvs_flash_init() -> c_int;
-        pub fn nvs_flash_erase() -> c_int;
         pub fn esp_netif_init() -> c_int;
         pub fn esp_event_loop_create_default() -> c_int;
         pub fn esp_wifi_init(cfg: *const c_void) -> c_int;
@@ -88,7 +86,7 @@ mod ffi {
 pub const ESP_NOW_PAYLOAD_MAX: usize = 244;
 
 /// Default WiFi channel for ESP-NOW mesh.
-const ESPNOW_CHANNEL: u8 = 1;
+pub const ESPNOW_CHANNEL: u8 = 1;
 
 /// MAC address length (6 bytes).
 pub const MAC_LEN: usize = 6;
@@ -204,17 +202,8 @@ impl EspNowTransport {
         }
 
         unsafe {
-            // 1. Init NVS
-            let mut ret = ffi::nvs_flash_init();
-            if ret == ffi::ESP_ERR_NVS_NO_FREE_PAGES || ret == ffi::ESP_ERR_NVS_NEW_VERSION_FOUND {
-                ffi::nvs_flash_erase();
-                ret = ffi::nvs_flash_init();
-            }
-            if ret != 0 {
-                return Err(EspNowError::InitFailed);
-            }
-
-            // 2. Init network interface + event loop
+            // 1. Init network interface + event loop
+            // (no NVS init: the esp-radio blob stack neither ships nor needs NVS)
             if ffi::esp_netif_init() != 0 {
                 return Err(EspNowError::InitFailed);
             }
@@ -222,7 +211,7 @@ impl EspNowTransport {
                 return Err(EspNowError::InitFailed);
             }
 
-            // 3. Init WiFi in STA mode
+            // 2. Init WiFi in STA mode
             // Use minimal config — no connection, just radio on
             let cfg = core::mem::zeroed();
             if ffi::esp_wifi_init(&cfg as *const _ as *const _) != 0 {
@@ -235,12 +224,12 @@ impl EspNowTransport {
                 return Err(EspNowError::InitFailed);
             }
 
-            // 4. Set channel
+            // 3. Set channel
             if ffi::esp_wifi_set_channel(ESPNOW_CHANNEL, 0) != 0 {
                 return Err(EspNowError::InitFailed);
             }
 
-            // 5. Init ESP-NOW
+            // 4. Init ESP-NOW
             if ffi::esp_now_init() != 0 {
                 return Err(EspNowError::InitFailed);
             }
