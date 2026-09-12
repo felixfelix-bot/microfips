@@ -59,8 +59,10 @@ pub async fn run_espnow_node(
     use microfips_esp_transport::runner;
     use microfips_esp_transport::control::{self, init_control};
 
-    #[cfg(feature = "log")]
-    logger::init(log::LevelFilter::Info);
+    // Not cfg-gated on a "log" feature: that feature doesn't exist in this crate
+    // (implicit dep-features are suppressed by `dep:log` in Cargo.toml). The
+    // `espnow` feature (required to compile this function) enables `dep:log`.
+    logger::init();
 
     microfips_esp_transport::heap::init();
     let mut led = runner::make_led(gpio2);
@@ -70,7 +72,6 @@ pub async fn run_espnow_node(
     let (mut transport, local_mac) = EspNowTransport::init()
         .expect("ESP-NOW init failed");
 
-    #[cfg(feature = "log")]
     log::info!("ESP-NOW initialized. MAC: {}", local_mac);
 
     // Print MAC via GPIO blink pattern (3 fast blinks = ready)
@@ -85,7 +86,6 @@ pub async fn run_espnow_node(
     transport.add_peer(MacAddress::BROADCAST)
         .expect("Failed to add broadcast peer");
 
-    #[cfg(feature = "log")]
     log::info!("ESP-NOW mesh node ready on channel {}", esp_now_transport::ESPNOW_CHANNEL);
 
     // Initialize control interface
