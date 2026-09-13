@@ -7,13 +7,20 @@ workflow ports the host-side jobs of `.github/workflows/ci.yml` (`test`,
 
 ## Where this file lives
 
-This branch (`ci/ngit-workflows`) is **not** the default branch, and `.ngit/` is
-deliberately kept off `main`: `felixfelix-bot/microfips` is a fork of
-`c03rad0r/microfips` which forks `Amperstrand/microfips`, and a workflow
-directory sitting on the default branch is one careless branch cut away from
-appearing in an upstream pull-request diff. Consequence, stated plainly: CI
-runs for the refs that carry this file and reach the ngit mirror — i.e. this
-branch once it is mirrored there, not `main`.
+`.ngit/` lives on `main` so the workflow runs continuously. `main` is mirrored
+to ngit by `gh-ngit-ci-bridge` (which mirrors `main`/`master` only), and ngit-ci
+reads `.ngit/act/workflows/` from the pushed ref — so this is the only placement
+that produces CI on ordinary pushes.
+
+`felixfelix-bot/microfips` is a fork of `c03rad0r/microfips` which forks
+`Amperstrand/microfips`, so a workflow directory on the default branch is one
+careless branch cut away from appearing in an upstream pull-request diff. That
+risk is now **enforced against**, not merely documented: a `pre-push` hook
+(`.git/hooks/pre-push`, plus the same rule repo-scoped in the fleet's shared
+`~/.git-hooks/pre-push`) refuses any push whose outgoing diff contains `.ngit/`
+when the destination is `Amperstrand/microfips` or `c03rad0r/microfips`. Pushes
+to our own fork are unaffected. Caveat worth knowing: hooks are not versioned,
+so a fresh clone does not carry the guard until it is installed.
 
 ## What the workflow runs
 
@@ -44,6 +51,17 @@ or read the events directly: kind **9841** = job result, kind **9842** =
 workflow result, kind **39842** = progress.
 
 ## Measured status of this branch
+
+**First real run on the coordinator: success.** Workflow result (kind 9842)
+`12edb9d0ff6e` carries `conclusion=success` for commit `15efdd37`, with three
+job results (kind 9841) — `host-tests`, `golden-vectors`, `build-host` — all
+`conclusion=success`. Queued 10:02:57Z, started 10:15:29Z, finished 10:23:55Z
+(≈21 min wall: 12.5 min queue behind another repo's build, then ≈8.5 min of
+work). The coordinator's `w`-tag hash `736a9d66980738aa…` byte-matches the
+sha256 of this workflow file, so it ran exactly this file. Log tails in the
+result events are truncated (`[log-tail omitted=107059]`), so per-binary test
+counts are not quotable from the run itself — the numbers below come from
+running the same commands locally.
 
 Every `run:` command below was executed locally on this branch before the
 workflow was committed (host: cargo/rustc 1.98.1, `stable`, no cross targets):
