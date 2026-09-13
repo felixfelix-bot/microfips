@@ -15,12 +15,14 @@ that produces CI on ordinary pushes.
 `felixfelix-bot/microfips` is a fork of `c03rad0r/microfips` which forks
 `Amperstrand/microfips`, so a workflow directory on the default branch is one
 careless branch cut away from appearing in an upstream pull-request diff. That
-risk is now **enforced against**, not merely documented: a `pre-push` hook
-(`.git/hooks/pre-push`, plus the same rule repo-scoped in the fleet's shared
-`~/.git-hooks/pre-push`) refuses any push whose outgoing diff contains `.ngit/`
-when the destination is `Amperstrand/microfips` or `c03rad0r/microfips`. Pushes
-to our own fork are unaffected. Caveat worth knowing: hooks are not versioned,
-so a fresh clone does not carry the guard until it is installed.
+risk is **enforced against**, not merely documented: the guard is **versioned
+in this repo** at `.githooks/pre-push`, and refuses any push whose outgoing
+diff contains `.ngit/` when the destination is `Amperstrand/microfips` or
+`c03rad0r/microfips`. Pushes to our own fork and to every ngit/nostr remote are
+unaffected. Install it per clone with `scripts/install-git-hooks.sh`, which
+sets `core.hooksPath` to the repo-relative `.githooks` (so it also activates
+`.githooks/pre-commit`). Caveat worth knowing: git does not run committed hooks
+by itself, so **a fresh clone is unprotected until that installer runs**.
 
 ## What the workflow runs
 
