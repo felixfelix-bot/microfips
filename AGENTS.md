@@ -5,7 +5,7 @@
 Minimal FIPS (Free Internetworking Peering System) leaf node on STM32F469I-DISCO and ESP32.
 Both MCUs use length-prefixed framing → host bridge → UDP → VPS running stock FIPS.
 - **STM32F469I-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (primary target)
-- **STM32F746G-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (tested, hardware-verified 2026-05-04: FIPS Noise IK handshake + heartbeat with VPS passes. Separate build target `--features board-f746`. Only 1 user LED on PI1; orange/red/blue pins are Arduino header GPIOs with no physical LEDs.)
+- **STM32F746G-DISCO:** USB CDC ACM transport → serial_udp_bridge.py (tested, hardware-verified 2026-05-04: FIPS Noise IK handshake + VPS heartbeat round-trip passes. Separate build target `--features board-f746`. Only 1 user LED on PI1; orange/red/blue pins are Arduino header GPIOs with no physical LEDs.)
 - **ESP32-D0WD:** UART transport (CP210x USB-serial) → serial_udp_bridge.py, OR BLE transport → ble_udp_bridge.py (feature-gated), OR WiFi transport → direct UDP to FIPS (feature-gated, requires external antenna)
 
 ## Workspace architecture
@@ -29,15 +29,45 @@ VPS credentials are stored in environment variables (or a `.env` file, never com
 ```bash
 export VPS_HOST=orangeclaw.dns4sats.xyz
 export VPS_USER=routstr
-export VPS_PASS=<password>
 
-# Shorthand:
-vssh() { sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" "$@"; }
-vscp() { sshpass -p "$VPS_PASS" scp -o StrictHostKeyChecking=no "$1" "$VPS_USER@$VPS_HOST:$2"; }
+# --- Preferred: key-based auth with a pinned known_hosts --------------------
+# 1. Dedicated key for this VPS (add a passphrase if you use ssh-agent):
+ssh-keygen -t ed25519 -f "${HOME}/.ssh/microfips_vps" -C microfips-vps
+# 2. Install the public key. The VPS password is typed once into the prompt --
+#    it never lands on any command line:
+ssh-copy-id -i "${HOME}/.ssh/microfips_vps.pub" "$VPS_USER@$VPS_HOST"
+# 3. Pin the host key. `ssh-keyscan` only *records* a key, it does not
+#    authenticate it: compare the fingerprint below against the one read from
+#    the VPS console, and only then keep the known_hosts entry:
+ssh-keyscan -t ed25519 "$VPS_HOST" >> "${HOME}/.ssh/known_hosts"
+ssh-keygen -lf <(ssh-keyscan -t ed25519 "$VPS_HOST" 2>/dev/null)
+# 4. Shared options: pinned identity, pinned known_hosts, host verification ON:
+export VPS_SSH_OPTS="-i ${HOME}/.ssh/microfips_vps -o UserKnownHostsFile=${HOME}/.ssh/known_hosts -o StrictHostKeyChecking=yes -o ConnectTimeout=10"
+
+# Shorthand (key-based -- the default):
+vssh() { ssh $VPS_SSH_OPTS "$VPS_USER@$VPS_HOST" "$@"; }
+vscp() { scp $VPS_SSH_OPTS "$1" "$VPS_USER@$VPS_HOST:$2"; }
+
+# --- Fallback: password auth, only when a key cannot be installed -----------
+# `sshpass -e` reads the password from the SSHPASS environment variable.
+# The `-p` form is forbidden here: argv is readable in /proc/<pid>/cmdline.
+export SSHPASS   # value comes from .env / your secret store; never committed
+# Same helpers, same argument passing -- only the transport prefix changes:
+#   vssh() { sshpass -e ssh $VPS_SSH_OPTS "$VPS_USER@$VPS_HOST" "$@"; }
+#   vscp() { sshpass -e scp $VPS_SSH_OPTS "$1" "$VPS_USER@$VPS_HOST:$2"; }
 ```
 
 VPS FIPS binds `0.0.0.0:2121`, MCU peers configured at `127.0.0.1:31337` (STM32) and `127.0.0.1:31338` (ESP32).
-FIPS logs: `vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 30 --since '5 min ago'"`
+FIPS logs (interactive TTY, so `sudo` prompts on the pty):
+`vssh -t 'sudo journalctl -u fips --no-pager -n 30 --since "5 min ago"'`
+
+`SSHPASS` is the VPS password: read only by `sshpass -e` in the fallback path, and never passed in argv.
+For the remote `sudo` prompt use an interactive TTY (`vssh -t 'sudo ...'`) or a `NOPASSWD` sudoers rule
+scoped to the exact `journalctl`/`systemctl` invocations -- never feed the password to sudo through a pipe
+or argv.
+
+Legacy name: the `scripts/` test harnesses still read the old `VPS_PASS` variable, so export both names
+until they are migrated (outside the scope of this document).
 
 ## Build
 
@@ -613,8 +643,8 @@ See `scripts/test_hw_handshake.sh` for the full automated procedure. The manual 
 # If you have saved PIDs from a previous run:
 kill $PROXY_PID $TUNNEL_PID 2>/dev/null
 fuser -k 45679/tcp 2>/dev/null  # local port cleanup
-vssh 'pkill -f fips_bridge 2>/dev/null; echo $VPS_PASS | sudo -S fuser -k 45679/tcp 2>/dev/null'
-vssh "echo $VPS_PASS | sudo -S systemctl restart fips"
+vssh -t 'pkill -f fips_bridge 2>/dev/null; sudo fuser -k 45679/tcp 2>/dev/null'
+vssh -t 'sudo systemctl restart fips'
 
 # 1. Verify USB (after MCU reset + 7s enumeration wait)
 lsusb | grep -E "c0de|0483"
@@ -628,9 +658,10 @@ done
 python3 tools/serial_tcp_proxy.py --serial /dev/ttyACM<N> --port 45679 &
 
 # 3. SSH reverse tunnel: VPS:45679 → host:45679
-sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no -fN \
+# key-based by default; for the password fallback prefix with `sshpass -e`
+ssh $VPS_SSH_OPTS -fN \
   -R 45679:127.0.0.1:45679 -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
-  $VPS_USER@$VPS_HOST
+  "$VPS_USER@$VPS_HOST"
 
 # 4. Upload and start bridge on VPS
 vscp tools/fips_bridge.py :/tmp/fips_bridge.py
@@ -638,7 +669,7 @@ vssh 'nohup python3 /tmp/fips_bridge.py --tcp 127.0.0.1:45679 > /tmp/bridge_hw.l
 
 # 5. Check results (after ~10s)
 vssh 'cat /tmp/bridge_hw.log'
-vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 10 --since '1 min ago'"
+vssh -t 'sudo journalctl -u fips --no-pager -n 10 --since "1 min ago"'
 ```
 
 **Expected in bridge log:** `CDC->UDP: frame#1 114B` (MSG1), `UDP->CDC: frame#1 69B` (MSG2)
@@ -653,8 +684,8 @@ Manual steps for ESP32 (uses port 45680, VPS peer port 31338):
 # 0. CLEANUP — kill stale processes
 kill $PROXY_PID $TUNNEL_PID 2>/dev/null
 fuser -k 45680/tcp 2>/dev/null
-vssh 'pkill -f fips_bridge 2>/dev/null; echo $VPS_PASS | sudo -S fuser -k 45680/tcp 2>/dev/null'
-vssh "echo $VPS_PASS | sudo -S systemctl restart fips"
+vssh -t 'pkill -f fips_bridge 2>/dev/null; sudo fuser -k 45680/tcp 2>/dev/null'
+vssh -t 'sudo systemctl restart fips'
 
 # 1. Verify ESP32 serial port (CP210x, NOT ttyACM*)
 for p in /dev/ttyUSB*; do
@@ -666,9 +697,10 @@ done
 python3 tools/serial_tcp_proxy.py --serial /dev/ttyUSB0 --port 45680 &
 
 # 3. SSH reverse tunnel: VPS:45680 → host:45680
-sshpass -p "$VPS_PASS" ssh -o StrictHostKeyChecking=no -fN \
+# key-based by default; for the password fallback prefix with `sshpass -e`
+ssh $VPS_SSH_OPTS -fN \
   -R 45680:127.0.0.1:45680 -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes \
-  $VPS_USER@$VPS_HOST
+  "$VPS_USER@$VPS_HOST"
 
 # 4. Upload and start bridge on VPS (ESP32 uses --local-port 31338)
 vscp tools/fips_bridge.py :/tmp/fips_bridge.py
@@ -676,7 +708,7 @@ vssh 'nohup python3 /tmp/fips_bridge.py --tcp 127.0.0.1:45680 --local-port 31338
 
 # 5. Check results (after ~10s)
 vssh 'cat /tmp/bridge_esp32.log'
-vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 10 --since '1 min ago'"
+vssh -t 'sudo journalctl -u fips --no-pager -n 10 --since "1 min ago"'
 ```
 
 **Note:** ESP32 does not use USB CDC, so there is no DTR-based `wait_connection()` blocking.
@@ -712,7 +744,7 @@ sleep 30
 
 # 5. Check results
 # Expected in bridge output: "BLE->UDP: frame#1" (MSG1), "UDP->BLE: frame#1" (MSG2)
-# Check VPS: vssh "echo $VPS_PASS | sudo -S journalctl -u fips --no-pager -n 5 --since '1 min ago'"
+# Check VPS: vssh -t 'sudo journalctl -u fips --no-pager -n 5 --since "1 min ago"'
 ```
 
 **Note:** BLE bridge uses BlueZ D-Bus API, not the serial port. No DTR-based `wait_connection()`
