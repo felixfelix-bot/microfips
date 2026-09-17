@@ -40,11 +40,14 @@ pub mod wifi_transport;
     feature = "esp-now"
 ))]
 pub mod control;
-#[cfg(any(
-    feature = "ble",
-    feature = "l2cap",
-    feature = "wifi",
-    feature = "esp-now"
+// Available in every ESP build that has both the `log` crate (`log` feature) and
+// the esp-println printer (each chip feature enables `esp-println/<chip>`); `ble`,
+// `l2cap`, `wifi` and `esp-now` all imply `log`, so this gate is a superset of the
+// previous `any(ble, l2cap, wifi, esp-now)` and additionally covers the radio-less
+// `uart`/`usb` binaries.
+#[cfg(all(
+    feature = "log",
+    any(feature = "esp32", feature = "esp32s3", feature = "esp32c3")
 ))]
 pub mod logger;
 
