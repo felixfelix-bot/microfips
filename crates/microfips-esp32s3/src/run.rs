@@ -62,7 +62,10 @@ pub async fn run_usb_node(
     // Deliberately NO `logger::init()` here: this binary's transport *is* the
     // USB-Serial-JTAG peripheral, i.e. the same FIFO esp-println prints on for the S3,
     // so a backend would inject log text into the FIPS frame stream
-    // (docs/console-channels.md).
+    // (docs/console-channels.md). The silence is guarded, not just commented:
+    // `scripts/check-console-policy.sh` declares this entry point `silent` and fails
+    // the CI job if a `logger::init()` call ever appears in this body (or in
+    // `src/bin/usb.rs`, or in `espnow_gateway::run_espnow_gateway`).
 
     let mut led = runner::make_led(gpio2);
     let (trng_source, trng) = runner::init_trng(rng_periph, adc1);

@@ -18,7 +18,9 @@ pub async fn run_uart_node(
     // peripheral this binary's frames leave on (GPIO1/GPIO3). A backend here would
     // interleave log text into the FIPS frame stream, so the ESP32 `uart` image is a
     // console-free image by design (docs/console-channels.md). The `wifi`/`esp-now`
-    // images log as usual: their transport is UDP over Wi-Fi, not this UART.
+    // images log as usual: their transport is UDP over Wi-Fi, not this UART. The
+    // silence is guarded: `scripts/check-console-policy.sh` declares this entry point
+    // `silent` and fails CI if a `logger::init()` call appears here.
     microfips_esp_transport::heap::init();
     let mut led = runner::make_led(gpio2);
     let (trng_source, trng) = runner::init_trng(rng_periph, adc1);
