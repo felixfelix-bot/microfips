@@ -7,9 +7,16 @@
 //!
 //! The module is compiled whenever the crate has both the `log` crate (`log`
 //! feature) and the esp-println printer (each chip feature enables
-//! `esp-println/<chip>`). It used to be gated on `any(ble, l2cap, wifi, esp-now)`,
-//! which excluded the radio-less `uart`/`usb` binaries; every one of those features
-//! implies `log`, so the new gate is a strict superset of the old one.
+//! `esp-println/<chip>`). The previous gate was `any(ble, l2cap, wifi, esp-now)`,
+//! which excluded the radio-less `uart`/`usb` binaries; this one compiles there
+//! too. That relation to the old gate holds only *under this crate's feature
+//! invariant*, which is worth naming rather than assuming: each radio feature
+//! (`ble`, `l2cap`, `wifi`, `esp-now`) names `log` in its own feature list in
+//! `Cargo.toml`, and any build that selects a radio feature also selects a chip
+//! feature (the chip features are mutually exclusive, enforced in `lib.rs`). Drop
+//! the first half and the radio gate is no longer implied by the new one; drop the
+//! second and a radio build loses this module entirely, failing loudly at its
+//! `logger::init()` call site instead of silently discarding records.
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
@@ -54,13 +61,18 @@ impl Log for UartLogger {
 ///
 /// # Why the racy install is sound here (CAS-less targets)
 ///
-/// `set_logger_racy` must not race another installer. Each caller is a single
-/// firmware entry point (`run_uart_node`, `run_wifi_node`, `run_esp_now_node`, …)
-/// reached once from `main` before any other task runs, and no entry point calls
-/// another, so two installers can never overlap. An interrupt that logs in the
-/// window between the `LOGGER` store and the `STATE` store sees
-/// `STATE == UNINITIALIZED` (and a max level of `Off`) and is dropped, so a
-/// partially-initialised logger is never observed.
+/// `set_logger_racy` must not race another installer, i.e. interrupts must be
+/// disabled around it *or* no interrupt may install a logger. The precondition
+/// would not hold on a target where logging is installed from an interrupt, but
+/// it holds here: `init` is the only installer in the image (nothing else calls
+/// `set_logger`/`set_logger_racy`, and `esp-println`'s own `log-04` backend is not
+/// enabled), so while interrupts may well be enabled, none of them can install
+/// one. Each caller is a single firmware entry point (`run_uart_node`,
+/// `run_wifi_node`, `run_esp_now_node`, …) reached once from `main` before any
+/// other task runs, and no entry point calls another, so two installers can never
+/// overlap. An interrupt that *logs* in the window between the `LOGGER` store and
+/// the `STATE` store sees `STATE == UNINITIALIZED` (and a max level of `Off`) and
+/// is dropped, so a partially-initialised logger is never observed.
 #[cfg(target_has_atomic = "ptr")]
 pub fn init() {
     log::set_logger(&LOGGER).unwrap();
@@ -80,10 +92,14 @@ pub fn init() {
 /// Compile-time witness that the *installing* path is the one compiled for this
 /// target: `set_logger_racy` is the ungated alternative to the
 /// `target_has_atomic = "ptr"`-gated `set_logger`, so this static only resolves if
-/// the racy installer really exists on `riscv32imc-unknown-none-elf` (a regression to
-/// a no-op or to `set_logger` fails the C3 build). `#[used]` keeps the pointer in the
-/// object file so the C3 image can be inspected as evidence
-/// (`llvm-nm`/`llvm-objdump`) that a real installer is linked in.
+/// that API still exists on `riscv32imc-unknown-none-elf`. In other words it pins
+/// the *availability* of the racy API (fails the C3 build if it is gated away
+/// again), and `#[used]` keeps the pointer in the object file so the C3 image can
+/// be inspected as evidence (`llvm-nm`/`llvm-objdump`) that a real installer is
+/// linked in. It does **not** prove the installer is called: an `init()` body
+/// emptied to `{}` still compiles with this static present. The disassembly A/B —
+/// `init` tail-calling `set_logger_racy` (its `Result` checked) and then
+/// `set_max_level_racy(LevelFilter::Info)` — is what shows the install happens.
 #[cfg(not(target_has_atomic = "ptr"))]
 #[used]
 static RACY_INSTALL_WITNESS: unsafe fn(&'static dyn Log) -> Result<(), log::SetLoggerError> =

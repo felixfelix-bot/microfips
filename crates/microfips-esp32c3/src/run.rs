@@ -52,13 +52,9 @@ pub async fn run_usb_node(
     use esp_hal::usb_serial_jtag::UsbSerialJtag;
     use microfips_esp_transport::usb_transport::UsbTransport;
 
-    // Deliberately NO `logger::init()` here. This binary's transport *is* the
-    // USB-Serial-JTAG peripheral, which on the C3 is also the esp-println backend's
-    // output FIFO, so a logging backend would inject log text into the FIPS frame
-    // stream (the same rule the USB-bridged gateway follows — see AGENTS.md
-    // "Console"). Panics stay off this channel too: this bin uses `panic_blink!`,
-    // not `panic_blink_print!`. Install the logger on the `uart`/`wifi`/`esp-now`
-    // binaries instead.
+    // Deliberately NO `logger::init()` here: this binary's transport *is* the
+    // esp-println channel, so logs would corrupt the FIPS frame stream — see
+    // AGENTS.md "Console (ESP32-C3)".
 
     let mut led = runner::make_led(gpio2);
     let (trng_source, trng) = runner::init_trng(rng_periph, adc1);
