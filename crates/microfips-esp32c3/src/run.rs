@@ -55,7 +55,8 @@ pub async fn run_usb_node(
     // Deliberately NO `logger::init()` here: this binary's transport *is* the
     // esp-println channel, so logs would corrupt the FIPS frame stream
     // (docs/console-channels.md). `scripts/check-console-policy.sh` declares this
-    // entry point `silent` and fails CI if a call ever appears here.
+    // entry point `silent` and fails CI if a call ever appears here. Panics stay off
+    // this channel too: this image uses `panic_blink!`, not `panic_blink_print!`.
 
     let mut led = runner::make_led(gpio2);
     let (trng_source, trng) = runner::init_trng(rng_periph, adc1);
