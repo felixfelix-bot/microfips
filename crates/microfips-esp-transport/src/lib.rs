@@ -41,10 +41,14 @@ pub mod wifi_transport;
 ))]
 pub mod control;
 // Available in every ESP build that has both the `log` crate (`log` feature) and
-// the esp-println printer (each chip feature enables `esp-println/<chip>`); `ble`,
-// `l2cap`, `wifi` and `esp-now` all imply `log`, so this gate is a superset of the
-// previous `any(ble, l2cap, wifi, esp-now)` and additionally covers the radio-less
-// `uart`/`usb` binaries.
+// the esp-println printer (each chip feature enables `esp-println/<chip>`). It
+// replaces the previous `any(ble, l2cap, wifi, esp-now)` gate, which excluded the
+// radio-less `uart`/`usb` binaries. The new gate covers strictly more builds only
+// under this crate's feature invariant: every radio feature names `log` in its own
+// list (Cargo.toml) and every build selecting one also selects a chip feature (the
+// chip features are mutually exclusive, per the compile_error! above). A radio
+// build with no chip feature would lose this module and fail at its
+// `logger::init()` call site — loud, not silent.
 #[cfg(all(
     feature = "log",
     any(feature = "esp32", feature = "esp32s3", feature = "esp32c3")
