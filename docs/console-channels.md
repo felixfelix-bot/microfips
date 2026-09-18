@@ -13,7 +13,7 @@ Per-image answer (measured, see "Verifying an image" below):
 | `microfips-esp32s3-uart` | UART0 (GPIO43 TX / GPIO44 RX) | USB-Serial-JTAG FIFO (`0x6003_8000`), via `esp-println/jtag-serial` | **yes** — first statement of `run_uart_node` |
 | `microfips-esp32s3-usb` | the USB-Serial-JTAG peripheral itself | the same FIFO | **no, by design** |
 | `microfips-esp32s3` (wifi) / `-espnow` / `-relay-ap` / `-mdns-spike` | Wi-Fi/UDP, ESP-NOW, or mDNS | USB-Serial-JTAG FIFO | yes (through `run_tasks`, `relay_ap`, the spike's `main`) |
-| `microfips-esp32s3-espnow-gw` (USB-bridged gateway) | USB serial to the host bridge | the same FIFO | **no, by design** — measured: `logger::init` mentions 0, backend symbols 0 (`heap::init` mentions 6, so the grep is live on that ELF); log text would land in the frame stream, and the bridge's length-prefix resync skips ROM boot text and panics, not interleaved log lines |
+| `microfips-esp32s3-espnow-gw` (USB-bridged gateway) | USB serial to the host bridge | the same FIFO | **no, by design** — measured: `logger::init` mentions 0 and backend symbols 0 (the backend is not linked, not merely uncalled; `heap::init` mentions 6, so the grep is live on that ELF); log text would land in the frame stream, and the bridge's length-prefix resync skips ROM boot text and panics, not interleaved log lines |
 | `microfips-esp32c3-uart` | UART0 | USB-Serial-JTAG FIFO | **yes** |
 | `microfips-esp32c3-usb` | the USB-Serial-JTAG peripheral itself | the same FIFO | **no, by design** (that image also uses `panic_blink!`, not `panic_blink_print!`) |
 | `microfips-esp32c3-wifi` / `-esp-now` | Wi-Fi/UDP, ESP-NOW | USB-Serial-JTAG FIFO | yes (through `run_tasks`) |
@@ -69,13 +69,14 @@ ELF=target/xtensa-esp32s3-none-elf/release/microfips-esp32s3-uart
 "$OD" -d --demangle "$ELF" | grep -nE 'microfips_esp_transport::(logger|heap)::init>'
 
 # 3. which printer esp-println linked (S3: 0x6003_8000 USB-Serial-JTAG FIFO;
-#    ESP32: 0x4000_9200 ROM uart_tx_one_char). Both are *constants loaded through an
-#    l32r literal pool*, not symbols, so this grep hits the pool rather than a printer
-#    function — either the annotated load target, e.g.
+#    ESP32: 0x4000_9200 ROM uart_tx_one_char). Neither address is a symbol: each is
+#    *materialized via an l32r instruction that references a literal-pool entry*, so
+#    this grep hits the pool rather than a printer function — either the annotated load
+#    target, e.g.
 #    `l32r a13, 420110dc <...> (60038000 <_rtc_slow_bss_end+...>)`, or, where objdump
 #    decodes the pool word itself as an instruction, a raw data line such as
-#    `420110d8: 60038000ffff3caf { excw; excw }`. A hit therefore means "this constant
-#    is somewhere in the image", which is the whole question here.
+#    `420110d8: 60038000ffff3caf { excw; excw }`. A hit therefore means "this
+#    literal-pool entry is somewhere in the image", which is the whole question here.
 "$OD" -d --demangle "$ELF" | grep -E '6003.?8000|4000.?9200'
 ```
 
