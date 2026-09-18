@@ -88,8 +88,8 @@ required-features = ["relay-ap"]
 microfips-core = { path = "../microfips-core", features = ["log"] }
 microfips-esp-common = { path = "../microfips-esp-common" }
 # `log` is enabled unconditionally so the S3 `uart`/`usb` binaries (which have no
-# radio feature) can install the logger backend; the radio features below already
-# implied it before this change.
+# radio feature) can install the logger backend; the radio features listed above
+# already implied it before this change.
 microfips-esp-transport = { path = "../microfips-esp-transport", features = ["esp32s3", "log"] }
 microfips-http-demo = { path = "../microfips-http-demo" }
 microfips-protocol = { path = "../microfips-protocol", features = ["log"] }
