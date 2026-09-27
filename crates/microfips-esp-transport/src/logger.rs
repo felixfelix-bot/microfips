@@ -30,8 +30,15 @@ pub fn init() {
     // occurs. No concurrent access to the logger state is possible at this point.
     // The _racy variants are required on riscv32imc targets which lack native
     // atomic pointer operations (no 'a' extension on the C3).
+    //
+    // Installing a second time is deliberately a no-op instead of a panic:
+    // `set_logger_racy` returns Err when the global logger is already set, and
+    // unwrapping that on a no_std firmware turns any duplicate init into a
+    // reboot loop. This makes "the backend is installed exactly once on every
+    // code path" a property that holds by construction rather than by
+    // inspection (#C3 logger backend requirement).
     unsafe {
-        log::set_logger_racy(&LOGGER).unwrap();
+        let _ = log::set_logger_racy(&LOGGER);
         log::set_max_level_racy(LevelFilter::Info);
     }
 }
