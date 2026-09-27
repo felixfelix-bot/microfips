@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# pre-push: block pushes that contain secrets.
+#
+# Two layers, both required:
+#   1. pattern scan (.secret-patterns.txt) of the outgoing commits
+#   2. the keys.json host-key rule over the outgoing blobs of keys.json
+#      (microfips#134) — type-aware, so it cannot live in the pattern file.
+#
+# Portable: ERE (grep -En) — macOS BSD grep has no -P.
+#
+# Two deliberate differences from the upstream hook:
+#   * the outgoing set is computed as "commits not on any remote" (or the
+#     upstream range when one is configured) and scanned with --no-walk, so a
+#     push is judged on what it actually sends — not on HEAD~5, which drags
+#     in parent-branch history and would make every branch off an unrepaired
+#     tip unfixable;
+#   * the patch stream is produced ONCE into a temp file instead of re-running
+#     `git log -p "$RANGE"` per pattern inside a command substitution. That
+#     upstream shape buffers the whole history in a shell variable and wedges
+#     on large pushes (observed fleet-wide); -U0 also drops context lines.
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+PATTERNS_FILE="$ROOT/.secret-patterns.txt"
+HOSTKEY_CHECK="$ROOT/scripts/security/check_keys_json.py"
+
+if git rev-parse --verify --quiet '@{u}' >/dev/null; then
+    COMMITS="$(git rev-list '@{u}..HEAD')"
+else
+    COMMITS="$(git rev-list HEAD --not --remotes 2>/dev/null || git rev-list HEAD)"
+fi
+
+if [ -z "$COMMITS" ]; then
+    echo "No new commits to scan."
+    exit 0
+fi
+
+FOUND=0
+
+# --- layer 2: keys.json host-key rule over the outgoing blobs --------------
+if [ -f "$HOSTKEY_CHECK" ]; then
+    for sha in $COMMITS; do
+        if ! git diff-tree --no-commit-id --name-only -r "$sha" | grep -qx 'keys.json'; then
+            continue
+        fi
+        if ! git show "$sha:keys.json" | python3 "$HOSTKEY_CHECK" --quiet -; then
+            echo "PUSH BLOCKED — keys.json host-key rule violated in $sha (microfips#134)."
+            exit 1
+        fi
+    done
+else
+    echo "warning: $HOSTKEY_CHECK missing; keys.json rule NOT enforced" >&2
+fi
+
+# --- layer 1: pattern scan of the outgoing commits -------------------------
+if [ ! -f "$PATTERNS_FILE" ]; then
+    exit 0
+fi
+
+DIFF_TMP="$(mktemp -t microfips-prepush-XXXXXX)"
+trap 'rm -f "$DIFF_TMP"' EXIT
+# The pattern file and the gitleaks config are excluded: they carry regex
+# literals by design and would flag themselves (the self-block was reproduced
+# on 2026-09-27 — see .githooks/pre-commit).
+# shellcheck disable=SC2086
+git log -p -U0 --no-color --no-renames --no-walk=unsorted --format='commit %H' $COMMITS \
+    -- . ':(exclude).secret-patterns.txt' ':(exclude).gitleaks.toml' \
+    > "$DIFF_TMP" 2>/dev/null || true
+
+while IFS= read -r pattern; do
+    [ -z "$pattern" ] && continue
+    case "$pattern" in \#*) continue ;; esac
+    MATCH=$(grep -En -- "$pattern" "$DIFF_TMP" 2>/dev/null | head -5)
+    if [ -n "$MATCH" ]; then
+        echo "SECRET in push content (pattern: $pattern):"
+        echo "$MATCH"
+        FOUND=1
+    fi
+done < "$PATTERNS_FILE"
+
+if [ $FOUND -eq 1 ]; then
+    echo ""
+    echo "PUSH BLOCKED — secrets detected in the outgoing commits."
+    echo "Scrub with: git filter-repo --replace-text .secret-patterns.txt"
+    exit 1
+fi
+
+echo "No secrets detected."
+exit 0

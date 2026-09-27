@@ -20,10 +20,13 @@ if [ ! -f "$PATTERNS_FILE" ]; then
 fi
 
 FOUND=0
+# .secret-patterns.txt / .gitleaks.toml are excluded: they carry regex literals
+# by design and would otherwise permanent-fail CI (see .githooks/pre-commit).
 while IFS= read -r pattern; do
     [ -z "$pattern" ] && continue
     case "$pattern" in \#*) continue ;; esac
-    MATCH=$(git grep -E -n -I -e "$pattern" -- . 2>/dev/null | head -5 || true)
+    MATCH=$(git grep -E -n -I -e "$pattern" -- . \
+        ':(exclude).secret-patterns.txt' ':(exclude).gitleaks.toml' 2>/dev/null | head -5 || true)
     if [ -n "$MATCH" ]; then
         echo "SECRET PATTERN in tracked tree (pattern: $pattern):"
         echo "$MATCH"

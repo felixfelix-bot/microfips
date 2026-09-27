@@ -242,6 +242,35 @@ class HookProbeTest(unittest.TestCase):
                               capture_output=True, text=True)
         self.assertEqual(push.returncode, 0, push.stdout + push.stderr)
 
+    def test_committing_the_pattern_file_is_not_self_blocked(self):
+        """Regression: .secret-patterns.txt carries regex literals by design and
+        tripped its own hardcoded-password-assignment line when this guard was
+        first committed (reproduced 2026-09-27). All three consumers exempt it.
+
+        The self-matching pattern is DISCOVERED from the pattern file rather
+        than spelled out here, for two reasons: spelling a pattern literal out
+        in this file would make the test source itself a match (the very trap
+        being regression-tested), and discovery keeps the test honest if the
+        pattern set is edited later.
+        """
+        with open(os.path.join(REPO, ".secret-patterns.txt")) as fh:
+            candidates = [ln.strip() for ln in fh
+                          if ln.strip() and not ln.lstrip().startswith("#")]
+        self_matching = [p for p in candidates if re.search(p, p)]
+        self.assertTrue(self_matching,
+                        "no self-matching pattern found in .secret-patterns.txt; "
+                        "this regression test can no longer prove the exemption")
+        write(self.repo, "keys.json", doc({"linux": {"type": "fips-host", "nsec_hex": RETRIEVE}}))
+        self.assertEqual(self._commit("keys.json").returncode, 0)
+        with open(os.path.join(self.repo, ".secret-patterns.txt"), "a") as fh:
+            fh.write("\n# probe: duplicate a self-matching pattern\n%s\n" % self_matching[0])
+        p = self._commit(".secret-patterns.txt")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self._git("-C", self.repo, "remote", "add", "origin", self.remote)
+        push = subprocess.run(["git", "-C", self.repo, "push", "origin", "HEAD:refs/heads/main"],
+                              capture_output=True, text=True)
+        self.assertEqual(push.returncode, 0, push.stdout + push.stderr)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

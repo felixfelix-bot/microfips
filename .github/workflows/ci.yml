@@ -210,6 +210,60 @@ jobs:
         with:
           deny: warnings
 
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The keys.json host-key rule is applied to the blobs introduced by
+          # the change as well as to the tip, so the job needs those commits.
+          fetch-depth: 0
+
+      - name: keys.json host-key rule (tip)
+        run: python3 scripts/security/check_keys_json.py --quiet keys.json
+
+      - name: keys.json host-key rule (blobs introduced by this change)
+        # Type-aware rule from issue #134: no device with `type: fips-host` may
+        # carry a bare 64-hex nsec_hex. Evaluated per blob so a key that is
+        # added and then "fixed" in the same PR is still caught.
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "base $BASE not available — checking the tip only"
+            exit 0
+          fi
+          FAILED=0
+          for sha in $(git rev-list "$BASE"..HEAD); do
+            if git diff-tree --no-commit-id --name-only -r "$sha" | grep -qx keys.json; then
+              if ! git show "$sha:keys.json" | python3 scripts/security/check_keys_json.py --quiet -; then
+                echo "::error::keys.json host-key rule violated in $sha"
+                FAILED=1
+              fi
+            fi
+          done
+          exit $FAILED
+
+      - name: .secret-patterns.txt over the tracked tree
+        run: scripts/security/scan_secret_patterns.sh
+
+      - name: gitleaks
+        run: |
+          set -euo pipefail
+          VERSION=8.21.2
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          ./gitleaks version
+          ./gitleaks detect --no-git --config .gitleaks.toml --redact --exit-code 1 --verbose
+
+      - name: guard unit tests
+        run: python3 scripts/security/tests/test_host_key_guard.py
+
   build-host:
     name: Build Host Tools
     runs-on: ubuntu-latest
@@ -517,7 +571,7 @@ jobs:
   summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [test, golden-vectors, fips-compat, build-host, lint, sim-smoke, sim-ping, build-firmware, build-esp32, fips-integration]
+    needs: [test, golden-vectors, fips-compat, build-host, lint, sim-smoke, sim-ping, build-firmware, build-esp32, fips-integration, secret-scan]
     if: always()
     steps:
       - run: |
@@ -535,5 +589,6 @@ jobs:
           echo "| Build Firmware | \`${{ needs.build-firmware.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build ESP32 | \`${{ needs.build-esp32.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| FIPS Integration | \`${{ needs.fips-integration.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Secret Scan | \`${{ needs.secret-scan.result }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Commit:** \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"

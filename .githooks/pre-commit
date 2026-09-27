@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# pre-commit: block commits that contain secrets.
+#
+# Two layers, both required:
+#   1. pattern scan of the staged diff against .secret-patterns.txt
+#   2. the keys.json host-key rule on the STAGED blob (microfips#134) —
+#      .secret-patterns.txt can never cover it: keys.json legitimately holds
+#      published deterministic 64-hex test vectors for mcu/sim devices, so the
+#      rule has to look at each entry's `type`.  See
+#      scripts/security/check_keys_json.py.
+#
+# Portable: ERE (grep -En) — macOS BSD grep has no -P, which made the
+# upstream version of this hook silently inert on Macs.
+set -e
+
+ROOT="$(git rev-parse --show-toplevel)"
+PATTERNS_FILE="$ROOT/.secret-patterns.txt"
+HOSTKEY_CHECK="$ROOT/scripts/security/check_keys_json.py"
+
+FOUND=0
+
+# --- layer 2: keys.json host-key rule (staged content, not the worktree) ----
+if git diff --cached --name-only --diff-filter=ACM | grep -qx 'keys.json'; then
+    if [ -f "$HOSTKEY_CHECK" ]; then
+        if ! git show :keys.json | python3 "$HOSTKEY_CHECK" --quiet -; then
+            echo "COMMIT BLOCKED — keys.json host-key rule violated (staged blob)."
+            exit 1
+        fi
+    else
+        echo "warning: $HOSTKEY_CHECK missing; keys.json rule NOT enforced" >&2
+    fi
+fi
+
+# --- layer 1: pattern scan of the staged diff ------------------------------
+if [ ! -f "$PATTERNS_FILE" ]; then
+    exit 0  # no patterns file = no pattern scanning
+fi
+
+# -z + read -d '': spaces/newlines in filenames safe; deletions excluded.
+#
+# The pattern file (and the gitleaks config) are skipped: they carry regex
+# literals by design and would otherwise flag themselves — reproduced on
+# 2026-09-27: adding .secret-patterns.txt tripped its own hardcoded-password
+# assignment line and blocked the commit that introduced the guard. A real
+# secret inside those two files is not a scenario worth the permanent
+# self-block; the keys.json rule above still applies to keys.json.
+#
+# Corollary: never quote a pattern literal in a comment or test — prose that
+# spells the regex out is itself a match, and that is how this comment blocked
+# its own commit twice.
+while IFS= read -r -d '' file; do
+    [ -f "$file" ] || continue
+    case "$file" in
+        .secret-patterns.txt|.gitleaks.toml) continue ;;
+    esac
+    while IFS= read -r pattern; do
+        [ -z "$pattern" ] && continue
+        case "$pattern" in \#*) continue ;; esac
+        MATCH=$(git diff --cached -- "$file" | grep -En -- "$pattern" 2>/dev/null | head -3)
+        if [ -n "$MATCH" ]; then
+            echo "SECRET DETECTED in $file (pattern: $pattern):"
+            echo "$MATCH"
+            FOUND=1
+        fi
+    done < "$PATTERNS_FILE"
+done < <(git diff --cached --name-only -z --diff-filter=ACM)
+
+if [ $FOUND -eq 1 ]; then
+    echo ""
+    echo "COMMIT BLOCKED — secret pattern detected."
+    echo "Override (NOT RECOMMENDED): git commit --no-verify"
+    exit 1
+fi
+exit 0

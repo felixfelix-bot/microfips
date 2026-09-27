@@ -1,0 +1,41 @@
+# Gitleaks config for c03rad0r/microfips — every entry justified.
+#
+# SCHEMA NOTE: this file uses the SINGULAR `[allowlist]` block. gitleaks
+# 8.21.x — the version pinned in .github/workflows/ci.yml and the version
+# installed fleet-wide — silently IGNORES the newer `[[allowlists]]` array
+# syntax (added in 8.25): the config parses, no warning is printed, and the
+# allowlist has no effect (verified locally: 194 findings with `[[allowlists]]`
+# vs "no leaks found" with `[allowlist]`, same tree, same binary). Upstream's
+# `.gitleaks.toml` uses the array form; do not copy it back here without
+# bumping the pinned version.
+#
+# KNOWN GAP, DELIBERATELY COVERED ELSEWHERE: the stock gitleaks rule set does
+# NOT detect a bare 64-hex secp256k1 private key sitting in a JSON field. That
+# is why the leaked `devices.linux.nsec_hex` value in keys.json survived every
+# scan until a human read the file (microfips#134). Do not "fix" that here with
+# a bare `[0-9a-f]{64}` rule: keys.json carries published deterministic test
+# vectors for the mcu/sim devices and would light up constantly. The host-key
+# rule is enforced semantically by
+#   scripts/security/check_keys_json.py   (also run as CI job `secret-scan`)
+# A gitleaks rule cannot express it either: gitleaks compiles rules with Go
+# RE2, which has no lookahead, so "64-hex that is NOT RETRIEVE_FROM_*" is not
+# expressible.
+#
+# NOTE: keys.json itself is deliberately NOT allowlisted. It is a live file that
+# must keep passing scripts/security/check_keys_json.py: its mcu/sim entries hold
+# published deterministic vectors, its fips-host entries must be
+# RETRIEVE_FROM_* placeholders.
+title = "microfips gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Golden vectors + demo-doc keypairs: crates/microfips-core/tests/golden_vectors.json is deterministic noise/crypto test vectors (scalar 0x11/0xaa-class seeds, published handshake bytes) — the regression contract by design; README/docs/AGENTS/tools document lab_keygen demo keypairs (published test seeds, e.g. 0011..EEFF class)."
+paths = [
+  '''crates/microfips-core/tests/golden_vectors\.json''',
+  '''README\.md''',
+  '''docs/architecture\.md''',
+  '''tools/test-ble-pipeline\.sh''',
+  '''AGENTS\.md''',
+]
