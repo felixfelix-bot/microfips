@@ -2,9 +2,14 @@ PYTEST := .venv/bin/pytest
 ENVDIR := labgrid/config/envs
 TESTDIR := labgrid/tests
 
-.PHONY: test-all test-host test-esp32 test-esp32-uart test-esp32-l2cap test-esp32-ble test-stm32
+.PHONY: test-all test-host test-esp32 test-esp32-uart test-esp32-l2cap test-esp32-ble test-stm32 test-security
 
 test-all: test-host test-esp32 test-stm32
+
+# Host-only guards (no hardware, no venv needed): the keys.json host-key rule
+# from issue #134 and its hooks/CI wiring.
+test-security:
+	python3 scripts/security/tests/test_host_key_guard.py
 
 test-host:
 	$(PYTEST) --lg-env $(ENVDIR)/linux-host.yaml $(TESTDIR)/test_fips_host.py -v
