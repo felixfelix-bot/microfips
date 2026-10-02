@@ -155,6 +155,16 @@ pub const DEVICE_NAME: &str = "microfips-esp32s3";
 #[cfg(feature = "esp32c3")]
 pub const DEVICE_NAME: &str = "microfips-esp32c3";
 
+// The C3 peripheral register set lives in `chip_config.rs`
+// (`impl ChipConfig for Esp32c3`) plus the chip-local block in `control.rs`;
+// the legacy `UART0_BASE` / `GPIO_FUNC_IN_SEL_BASE` / `UART_RX_GPIO_NUM`
+// consts were deliberately removed in d293db6 (no readers anywhere in the
+// tree). C3 address facts, if they are ever needed again: UART0 =
+// 0x6000_0000, USB Serial JTAG = 0x6004_3000 (NOT UART0), GPIO_BASE =
+// 0x6000_4000 with FUNC_IN_SEL_CFG at GPIO_BASE + 0x154 = 0x6000_4154,
+// RTC_CNTL = 0x6000_8000 — esp32c3 PAC 0.32.2 lib.rs:426/525/552 and
+// gpio.rs:135; 0.33.0 lib.rs:435/534/561.
+
 // Reset register address (RTC_CNTL_OPTIONS0_REG)
 #[cfg(any(
     feature = "ble",
