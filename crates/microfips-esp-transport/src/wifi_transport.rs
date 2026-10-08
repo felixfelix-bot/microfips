@@ -56,8 +56,6 @@ pub async fn build_wifi_transport(
     crate::heap::init();
 
     const MAX_WIFI_RETRIES: u32 = 5;
-
-    const MAX_WIFI_RETRIES: u32 = 5;
     const WIFI_RETRY_BASE_SECS: u64 = 30;
 
     static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
