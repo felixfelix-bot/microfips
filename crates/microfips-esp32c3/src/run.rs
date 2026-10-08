@@ -6,8 +6,6 @@ use microfips_esp_transport::uart_transport::UartTransport;
 pub async fn run_uart_node(
     gpio2: esp_hal::peripherals::GPIO2<'static>,
     uart0: esp_hal::peripherals::UART0<'static>,
-    gpio20: esp_hal::peripherals::GPIO20<'static>,
-    gpio21: esp_hal::peripherals::GPIO21<'static>,
     rng_periph: esp_hal::peripherals::RNG<'static>,
     adc1: esp_hal::peripherals::ADC1<'static>,
 ) -> ! {
@@ -20,8 +18,6 @@ pub async fn run_uart_node(
         .with_baudrate(UART_BAUDRATE);
     let uart = esp_hal::uart::Uart::new(uart0, uart_config)
         .unwrap()
-        .with_tx(gpio20)  // ESP32-C3 uses GPIO20 for TX
-        .with_rx(gpio21)  // ESP32-C3 uses GPIO21 for RX
         .into_async();
     let (rx, tx) = uart.split();
     let transport = UartTransport { tx, rx };
@@ -48,14 +44,58 @@ pub async fn run_usb_node(
     runner::run_node(transport, trng_source, trng, &mut led, VPS_NPUB, NodeOpts::default()).await
 }
 
-#[cfg(feature = "ble")]
-pub use microfips_esp_transport::run_tasks::run_ble_node;
-
-#[cfg(feature = "l2cap")]
-pub use microfips_esp_transport::run_tasks::run_l2cap_node;
-
 #[cfg(feature = "wifi")]
 pub use microfips_esp_transport::run_tasks::run_wifi_node;
 
-#[cfg(feature = "esp-now")]
-pub use microfips_esp_transport::run_tasks::run_esp_now_node;
+#[cfg(feature = "espnow")]
+pub async fn run_espnow_node(
+    spawner: embassy_executor::Spawner,
+    gpio2: esp_hal::peripherals::GPIO2<'static>,
+    rng_periph: esp_hal::peripherals::RNG<'static>,
+    adc1: esp_hal::peripherals::ADC1<'static>,
+) -> ! {
+    use microfips_esp_transport::esp_now_transport::{self, EspNowTransport, MacAddress};
+    use microfips_esp_transport::logger;
+    use microfips_esp_transport::runner;
+    use microfips_esp_transport::control::{self, init_control};
+
+    #[cfg(feature = "log")]
+    logger::init(log::LevelFilter::Info);
+
+    microfips_esp_transport::heap::init();
+    let mut led = runner::make_led(gpio2);
+    let (trng_source, trng) = runner::init_trng(rng_periph, adc1);
+
+    // Initialize ESP-NOW
+    let (mut transport, local_mac) = EspNowTransport::init()
+        .expect("ESP-NOW init failed");
+
+    #[cfg(feature = "log")]
+    log::info!("ESP-NOW initialized. MAC: {}", local_mac);
+
+    // Print MAC via GPIO blink pattern (3 fast blinks = ready)
+    for _ in 0..3 {
+        led.toggle();
+        embassy_time::Timer::after_millis(100).await;
+        led.toggle();
+        embassy_time::Timer::after_millis(100).await;
+    }
+
+    // Add self as broadcast peer (send/receive broadcast messages)
+    transport.add_peer(MacAddress::BROADCAST)
+        .expect("Failed to add broadcast peer");
+
+    #[cfg(feature = "log")]
+    log::info!("ESP-NOW mesh node ready on channel {}", esp_now_transport::ESPNOW_CHANNEL);
+
+    // Initialize control interface
+    use microfips_esp_transport::node_info::NodeIdentity;
+    let identity = NodeIdentity::compute();
+    init_control(&identity, "esp-now");
+
+    // Start control task for UART CLI
+    spawner.spawn(control::control_task().unwrap());
+
+    // Run as a FIPS node using the existing runner
+    runner::run_node(transport, trng_source, trng, &mut led, VPS_NPUB, NodeOpts::default()).await
+}

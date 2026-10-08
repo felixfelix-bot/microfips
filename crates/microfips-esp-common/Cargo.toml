@@ -4,9 +4,14 @@ version = "0.1.0"
 edition = "2021"
 description = "Shared ESP32 code (chip-agnostic, no esp-hal dependency)"
 
+[features]
+default = []
+wifi = ["dep:embassy-net"]
+
 [dependencies]
 microfips-core = { path = "../microfips-core" }
 microfips-protocol = { path = "../microfips-protocol" }
-embassy-net = { workspace = true, features = ["dhcpv4", "udp"] }
+embassy-net = { workspace = true, features = ["dhcpv4", "udp"], optional = true }
 embassy-time = { workspace = true }
 static_cell = { workspace = true }
+portable-atomic = { version = "1", default-features = false }

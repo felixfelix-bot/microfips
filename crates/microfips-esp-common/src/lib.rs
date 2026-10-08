@@ -5,7 +5,9 @@
 extern crate alloc;
 
 pub mod config;
+#[cfg(feature = "wifi")]
 pub mod dns;
 pub mod node_info;
 pub mod stats;
+#[cfg(feature = "wifi")]
 pub mod udp_transport;

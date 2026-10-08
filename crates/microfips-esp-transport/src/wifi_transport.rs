@@ -3,6 +3,7 @@ use embassy_net::{Config, IpAddress, IpEndpoint, Runner, StackResources};
 use embassy_time::{with_timeout, Duration, Timer};
 use esp_hal::peripherals::WIFI;
 use esp_hal::rng::Trng;
+use esp_radio::wifi::scan::ScanConfig;
 use esp_radio::wifi::sta::StationConfig;
 use esp_radio::wifi::{Config as WifiConfig, Interface, WifiController};
 use microfips_esp_common::config::{VPS_HOST, VPS_PORT, WIFI_DHCP_TIMEOUT_SECS};
@@ -47,7 +48,7 @@ async fn net_task(mut runner: Runner<'static, Interface<'static>>) {
 
 pub async fn build_wifi_transport(
     spawner: embassy_executor::Spawner,
-    _wifi: WIFI<'static>,
+    wifi: WIFI<'static>,
     trng: &mut Trng,
     wifi_ssid: &str,
     wifi_password: &str,
@@ -55,7 +56,9 @@ pub async fn build_wifi_transport(
     crate::heap::init();
 
     const MAX_WIFI_RETRIES: u32 = 5;
-    const WIFI_RETRY_BASE_SECS: u64 = 5;
+
+    const MAX_WIFI_RETRIES: u32 = 5;
+    const WIFI_RETRY_BASE_SECS: u64 = 30;
 
     static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
     static RX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
@@ -63,10 +66,6 @@ pub async fn build_wifi_transport(
     static TX_META: StaticCell<[PacketMetadata; 4]> = StaticCell::new();
     static TX_BUF: StaticCell<[u8; 2048]> = StaticCell::new();
 
-    // SAFETY: Peripherals::steal() is called once during WiFi transport initialization.
-    // The WIFI peripheral is not consumed by esp_hal::init() in the binary entry point —
-    // it is only needed here for the WiFi radio. No other code accesses WIFI.
-    let wifi = unsafe { esp_hal::peripherals::Peripherals::steal().WIFI };
     let (mut wifi_controller, interfaces) =
         esp_radio::wifi::new(wifi, Default::default())
             .expect("wifi::new failed");
@@ -84,17 +83,19 @@ pub async fn build_wifi_transport(
 
     let station_config = StationConfig::default()
         .with_ssid(wifi_ssid)
-        .with_password(alloc::string::String::from(wifi_password));
+        .with_password(alloc::string::String::from(wifi_password))
+        .with_auth_method(esp_radio::wifi::AuthenticationMethod::Wpa2Personal);
     wifi_controller
         .set_config(&WifiConfig::Station(station_config))
         .expect("set wifi station config");
 
-    Timer::after(Duration::from_secs(2)).await;
+    Timer::after(Duration::from_secs(5)).await;
+
     let (_, vps_ip) = {
         let mut retry = 0u32;
         loop {
             let init_result: Result<_, WifiInitError> = match with_timeout(
-                Duration::from_secs(30),
+                Duration::from_secs(60),
                 wifi_controller.connect_async(),
             )
             .await

@@ -1,12 +1,13 @@
-//! FIPS-compatible control interface for ESP32 BLE/L2CAP/WiFi firmware.
+//! FIPS-compatible control interface for ESP32 BLE/L2CAP/WiFi/ESP-NOW firmware.
 //! Reads line-delimited commands, responds with JSON.
 //!
 //! ESP32-D0WD: reads from UART0 RX via GPIO matrix (GPIO3).
 //! ESP32-S3: reads from USB Serial JTAG RX FIFO (GPIO44 goes through
 //! USB Serial JTAG, not UART0 — esp-println outputs via USB Serial JTAG ROM
 //! functions on S3, so control input must match).
+//! ESP32-C3: reads from USB Serial JTAG RX FIFO (same as S3).
 
-#![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi", feature = "espnow"))]
 
 use core::ptr::{null_mut, read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
@@ -86,6 +87,35 @@ fn read_byte() -> u8 {
     unsafe {
         let val = read_volatile(USB_SERIAL_JTAG_EP1_REG) & 0xFF;
         // Clear EP1 done by writing bit 0 of EP1_CONF (wr_done)
+        write_volatile(USB_SERIAL_JTAG_EP1_CONF_REG, 0x01);
+        val as u8
+    }
+}
+// --- ESP32-C3: USB Serial JTAG (same peripheral as S3, same register layout) ---
+#[cfg(feature = "esp32c3")]
+const USB_SERIAL_JTAG_BASE: usize = 0x6004_3000;
+#[cfg(feature = "esp32c3")]
+const USB_SERIAL_JTAG_EP1_REG: *const u32 = (USB_SERIAL_JTAG_BASE + 0x08) as *const u32;
+#[cfg(feature = "esp32c3")]
+const USB_SERIAL_JTAG_EP1_CONF_REG: *mut u32 = (USB_SERIAL_JTAG_BASE + 0x0C) as *mut u32;
+#[cfg(feature = "esp32c3")]
+const USB_SERIAL_JTAG_IN_EP1_ST_REG: *const u32 = (USB_SERIAL_JTAG_BASE + 0x44) as *const u32;
+
+#[cfg(feature = "esp32c3")]
+fn init_rx() {}
+
+#[cfg(feature = "esp32c3")]
+fn rx_available() -> bool {
+    unsafe {
+        let st = read_volatile(USB_SERIAL_JTAG_IN_EP1_ST_REG);
+        (st & 0x04) != 0
+    }
+}
+
+#[cfg(feature = "esp32c3")]
+fn read_byte() -> u8 {
+    unsafe {
+        let val = read_volatile(USB_SERIAL_JTAG_EP1_REG) & 0xFF;
         write_volatile(USB_SERIAL_JTAG_EP1_CONF_REG, 0x01);
         val as u8
     }
@@ -229,7 +259,7 @@ fn handle_show_stats() {
     let l2cap = crate::l2cap_host::l2cap_stats_snapshot();
     #[cfg(feature = "l2cap")]
     esp_println::println!(
-        r#"{{"status":"ok","data":{{"msg1_tx":{},"msg2_rx":{},"hb_tx":{},"hb_rx":{},"data_tx":{},"data_rx":{},"srtt_ms":{},"loss_permil":{},"goodput_kbps":{},"jitter_us":{},"l2cap_zero_frame_disconnects":{},"l2cap_recv_timeouts":{},"l2cap_send_timeouts":{},"l2cap_send_errors":{},"l2cap_rx_drops":{},"l2cap_pubkey_ok":{},"l2cap_central_connects":{},"l2cap_peripheral_connects":{},"l2cap_last_role":{},"l2cap_last_reason":{}}}}}"#,
+        r#"{{"status":"ok","data":{{"msg1_tx":{},"msg2_rx":{},"hb_tx":{},"hb_rx":{},"data_tx":{},"data_rx":{},"srtt_ms":{},"loss_permil":{},"goodput_kbps":{},"jitter_us":{},"l2cap_zero_frame_disconnects":{},"l2cap_recv_timeouts":{},"l2cap_send_timeouts":{},"l2cap_send_errors":{},"l2cap_rx_drops":{},"l2cap_pubkey_ok":{},"l2cap_central_connects":{},"l2cap_peripheral_connects":{},"l2cap_last_role":{},"l2cap_last_reason":{}}}}}}"#,
         msg1_tx,
         msg2_rx,
         hb_tx,

@@ -2,31 +2,15 @@
 name = "microfips-esp32c3"
 version = "0.1.0"
 edition = "2021"
-description = "Minimal FIPS leaf node on ESP32-C3"
+description = "Minimal FIPS leaf node on ESP32-C3 (RISC-V)"
 
 [lib]
 name = "microfips_esp32c3"
 
 [features]
 default = ["wifi"]
-ble = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/ble"]
-l2cap = ["dep:esp-radio", "dep:trouble-host", "dep:bt-hci", "dep:embedded-io", "dep:esp-println", "dep:log", "microfips-esp-transport/l2cap"]
-wifi = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transport/wifi"]
-esp-now = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transport/esp-now"]
-
-[[bin]]
-name = "microfips-esp32c3-uart"
-path = "src/bin/uart.rs"
-
-[[bin]]
-name = "microfips-esp32c3-ble"
-path = "src/bin/ble.rs"
-required-features = ["ble"]
-
-[[bin]]
-name = "microfips-esp32c3-l2cap"
-path = "src/bin/l2cap.rs"
-required-features = ["l2cap"]
+wifi = ["dep:esp-radio", "dep:esp-println", "dep:log", "microfips-esp-transport/wifi", "microfips-esp-common/wifi"]
+espnow = ["microfips-esp-transport/espnow", "dep:esp-println", "dep:esp-radio"]
 
 [[bin]]
 name = "microfips-esp32c3-wifi"
@@ -34,9 +18,17 @@ path = "src/bin/wifi.rs"
 required-features = ["wifi"]
 
 [[bin]]
-name = "microfips-esp32c3-esp-now"
-path = "src/bin/esp-now.rs"
-required-features = ["esp-now"]
+name = "microfips-esp32c3-espnow"
+path = "src/bin/espnow.rs"
+required-features = ["espnow"]
+
+[[bin]]
+name = "microfips-esp32c3-uart"
+path = "src/bin/uart.rs"
+
+[[bin]]
+name = "microfips-esp32c3-usb"
+path = "src/bin/usb.rs"
 
 [dependencies]
 microfips-core = { path = "../microfips-core", features = ["log"] }
@@ -56,7 +48,7 @@ embassy-sync = { workspace = true }
 embedded-io-async = { workspace = true }
 heapless = { workspace = true }
 static_cell = { workspace = true }
-esp-radio = { workspace = true, features = ["esp32c3", "ble", "wifi", "esp-now", "unstable"], optional = true }
+esp-radio = { workspace = true, features = ["esp32c3", "wifi", "unstable"], optional = true }
 trouble-host = { workspace = true, optional = true }
 esp-alloc = { workspace = true }
 bt-hci = { workspace = true, features = ["uuid"], optional = true }

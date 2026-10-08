@@ -1,4 +1,4 @@
-#![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi"))]
+#![cfg(any(feature = "ble", feature = "l2cap", feature = "wifi", feature = "espnow"))]
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
@@ -26,6 +26,12 @@ impl Log for UartLogger {
 }
 
 pub fn init() {
-    log::set_logger(&LOGGER).unwrap();
-    log::set_max_level(LevelFilter::Info);
+    // SAFETY: We call init() exactly once during boot, before any other logging
+    // occurs. No concurrent access to the logger state is possible at this point.
+    // The _racy variants are required on riscv32imc targets which lack native
+    // atomic pointer operations (no 'a' extension on the C3).
+    unsafe {
+        log::set_logger_racy(&LOGGER).unwrap();
+        log::set_max_level_racy(LevelFilter::Info);
+    }
 }

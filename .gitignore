@@ -12,3 +12,9 @@ fips
 .sisyphus/
 *.log
 .venv/
+
+# Hermes agent state
+.hermes/
+
+# Cargo backup
+Cargo.toml.backup

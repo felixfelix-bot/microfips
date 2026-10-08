@@ -118,6 +118,7 @@ pub async fn run_wifi_node(
     use microfips_protocol::node::Node;
     use rand_core::RngCore;
 
+    esp_println::println!("[microFIPS] boot: WiFi mode starting");
     let mut led = crate::runner::make_led(gpio2);
     let (_trng_source, mut trng) = crate::runner::init_trng(rng_periph, adc1);
 
@@ -127,6 +128,8 @@ pub async fn run_wifi_node(
         embassy_time::Instant::now().as_millis() as u32,
         Ordering::Relaxed,
     );
+
+    esp_println::println!("[microFIPS] boot: TRNG ready, identity computed");
     log::info!("WiFi mode starting");
 
     let mut resp_eph = [0u8; 32];
@@ -134,6 +137,7 @@ pub async fn run_wifi_node(
     let mut init_eph = [0u8; 32];
     trng.fill_bytes(&mut init_eph);
 
+    esp_println::println!("[microFIPS] boot: ephemeral keys ready, connecting to WiFi SSID={}", config::WIFI_SSID);
     let transport = match build_wifi_transport(
         spawner,
         wifi,
@@ -145,6 +149,7 @@ pub async fn run_wifi_node(
     {
         Ok(transport) => transport,
         Err(err) => {
+            esp_println::println!("[microFIPS] ERROR: WiFi connect failed: {:?}", err);
             log::error!("WiFi: max retries exceeded, entering error state: {:?}", err);
             led.set_state(config::LED_OFF);
             loop {
@@ -156,6 +161,7 @@ pub async fn run_wifi_node(
         }
     };
 
+    esp_println::println!("[microFIPS] boot: WiFi connected, building FSP node");
     let rng = EspRng(trng);
     let mut node = Node::new(transport, rng, config::DEVICE_NSEC, VPS_NPUB);
     node.set_raw_framing(true);
@@ -174,6 +180,7 @@ pub async fn run_wifi_node(
     crate::control::set_peer_pub(VPS_NPUB);
     if let Ok(token) = crate::control::control_task() { spawner.spawn(token); }
 
+    esp_println::println!("[microFIPS] boot: starting Noise IK handshake with VPS1");
     log::info!("Node running over WiFi...");
     node.run(&mut handler).await;
     #[allow(unreachable_code)]
