@@ -19,5 +19,9 @@ name = "erasure_vectors"
 path = "tests/erasure_vectors.rs"
 
 [[test]]
-name = "pipeline_rx"
-path = "tests/pipeline_rx.rs"
+name = "row_weights"
+path = "tests/row_weights.rs"
+
+[[test]]
+name = "pipeline_tx"
+path = "tests/pipeline_tx.rs"

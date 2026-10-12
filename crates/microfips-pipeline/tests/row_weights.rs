@@ -9,14 +9,14 @@
 //! indices is what makes small missing sets unsolvable -- so the weights are
 //! worth pinning rather than assuming.
 
-use microfips_pipeline::erasure::{parity_row_weight, MAX_FRAGS};
+use microfips_pipeline::erasure::{parity_row_bits, MAX_FRAGS};
 
 #[test]
 fn parity_rows_have_expected_weights() {
     for m in [4usize, 8, 12, 16, 24, 32, 64] {
         let mut weights = [0usize; 8];
         for n in 0..8 {
-            weights[n] = parity_row_weight(n as i32, m as i32);
+            weights[n] = parity_row_bits(n as i32, m as i32).len();
         }
         // No row may be empty: an all-zero row carries no information at all.
         for (n, w) in weights.iter().enumerate() {

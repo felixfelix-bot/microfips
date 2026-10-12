@@ -25,6 +25,7 @@ extern crate alloc;
 
 pub mod erasure;
 pub mod fragment;
+pub mod tx;
 
 /// Debug switch for the GE solver trace, settable from tests/examples.
 #[cfg(feature = "std")]
@@ -485,7 +486,10 @@ pub fn recv_frame(rx: &mut PipelineRx, fragment: &[u8]) -> Option<Vec<u8>> {
 /// The erasure block is always `block_size * frag_size` bytes; the application
 /// frame inside it may be shorter and zero-padded to that boundary. Trailing
 /// zeros are therefore padding by construction.
-fn trim_padding(data: &mut Vec<u8>) {
+///
+/// A frame whose genuine payload ends in `0x00` is not round-trip exact under
+/// this rule. See [`tx`] for the matching note on the transmit side.
+pub fn trim_padding(data: &mut Vec<u8>) {
     while data.last() == Some(&0) {
         data.pop();
     }
