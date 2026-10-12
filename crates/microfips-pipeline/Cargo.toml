@@ -25,3 +25,11 @@ path = "tests/row_weights.rs"
 [[test]]
 name = "pipeline_tx"
 path = "tests/pipeline_tx.rs"
+
+# Debug harness for the GE solver: it flips the std-only GE_TRACE switch, so it
+# needs the feature and must be declared with required-features -- otherwise it
+# is still built during `cargo test` in the default (no_std) configuration and
+# fails the whole run.
+[[example]]
+name = "dbg_ge"
+required-features = ["std"]

@@ -1,8 +1,11 @@
 // Standalone debug harness: reproduce trial 0 from the failing property test
 // and dump decoder state at each step.
-use microfips_pipeline::erasure::{
-    DecodeStatus, ErasureDecoder, ErasureEncoder, MAX_REDUNDANCY,
-};
+//
+// Declared in Cargo.toml with `required-features = ["std"]`: it flips the
+// std-only `GE_TRACE` switch, so it cannot build in the default (no_std)
+// configuration and would otherwise take the whole
+// `cargo test -p microfips-pipeline` run down with it.
+use microfips_pipeline::erasure::{ErasureDecoder, ErasureEncoder, MAX_REDUNDANCY};
 
 struct Rng(u64);
 impl Rng {

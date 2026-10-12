@@ -386,13 +386,25 @@ fn fails_gracefully_when_losses_exceed_redundancy() {
 
 #[test]
 fn out_of_order_delivery_decodes_identically() {
+    // Reverse-order arrival must decode identically to in-order arrival -- but
+    // only for loss patterns the parity rows can actually span. The pattern
+    // used here previously ({1,3,6}) is *provably* unrecoverable: projecting
+    // the four parity rows onto those three columns gives rows {101, 000, 111,
+    // 000} of rank 2, so two of the three lost originals are simply not
+    // represented in any surviving parity fragment and no solver can recover
+    // them. Asserting success there would only be asserting a bug in the
+    // decoder's honesty check.
+    //
+    // Verified independently in examples/rank_check.rs (textbook Gaussian
+    // elimination over the projected system): unknowns=3, rank=2.
     let (k, frag_size, redundancy) = (8usize, 32usize, 4usize);
     let block = make_block(k, frag_size, 2024);
     let parity = encode_parity(&block, k, frag_size, redundancy);
     let total = k + redundancy;
 
-    // Reverse order, drop 3 originals.
-    let lost = [1usize, 3, 6];
+    // A 3-loss pattern that the rows DO span: originals 0, 1 and 3 all appear
+    // in row 1 ({0,1,4,6}), and rows 1/2/3 are independent on those columns.
+    let lost = [0usize, 1, 3];
     let mut assembly = Vec::new();
     let mut matrix = Vec::new();
     let mut dec = decoder(k, frag_size, &mut assembly, &mut matrix);
@@ -411,8 +423,50 @@ fn out_of_order_delivery_decodes_identically() {
         dec.process(counter as u16, payload);
     }
 
-    assert!(dec.is_complete(), "reverse-order delivery failed");
+    assert!(
+        dec.is_complete(),
+        "reverse-order delivery failed for a spanned loss pattern"
+    );
     assert_eq!(dec.assembled().unwrap(), &block[..]);
+}
+
+#[test]
+fn an_unrecoverable_loss_pattern_never_reports_complete() {
+    // The counterpart to the above: when the parity rows cannot span the loss,
+    // the decoder must NOT claim completion. Reporting complete with garbage
+    // bytes is far worse than reporting incomplete -- the pipeline would hand a
+    // silently corrupted frame to the application.
+    //
+    // (k=8, red=4, losing originals {1,3,6}) projects to a rank-2 system for 3
+    // unknowns -- see examples/rank_check.rs.
+    let (k, frag_size, redundancy) = (8usize, 32usize, 4usize);
+    let block = make_block(k, frag_size, 2024);
+    let parity = encode_parity(&block, k, frag_size, redundancy);
+    let total = k + redundancy;
+    let lost = [1usize, 3, 6];
+
+    let mut assembly = Vec::new();
+    let mut matrix = Vec::new();
+    let mut dec = decoder(k, frag_size, &mut assembly, &mut matrix);
+
+    for idx in (0..total).rev() {
+        if lost.contains(&idx) {
+            continue;
+        }
+        let counter = idx + 1;
+        let payload: &[u8] = if counter <= k {
+            let off = idx * frag_size;
+            &block[off..off + frag_size]
+        } else {
+            &parity[counter - k - 1]
+        };
+        dec.process(counter as u16, payload);
+    }
+
+    assert!(
+        !dec.is_complete(),
+        "decoder claimed completion on a provably underdetermined system"
+    );
 }
 
 #[test]
