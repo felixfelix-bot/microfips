@@ -44,3 +44,9 @@
   -> status: SHIPPED
 - Next: REPORT.md, then kanban_complete with artifacts.
   -> status: WRAPPING UP
+- kanban_complete REFUSED by tool ("unknown id or already terminal" — card in
+  triage, no current run; offload lane transitions status externally, per
+  prior "fleet-writeback" events). Full completion evidence landed on the
+  card as kanban_comment id 76 instead. Binaries NOT attachable via tool in
+  this lane; paths+sha256 recorded in comment/metadata/REPORT.md.
+  -> status: CARD EVIDENCE SHIPPED (comment 76); status transition = lane's job
