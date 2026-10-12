@@ -1,0 +1,23 @@
+[package]
+name = "microfips-pipeline"
+version = "0.1.0"
+edition = "2021"
+description = "Fragmentation + PRBS23-XOR erasure coding pipeline for FIPS over ESP-NOW (no_std)"
+license = "MIT"
+
+[dependencies]
+
+[dev-dependencies]
+rand = "0.9"
+
+[features]
+default = []
+std = []
+
+[[test]]
+name = "erasure_vectors"
+path = "tests/erasure_vectors.rs"
+
+[[test]]
+name = "pipeline_rx"
+path = "tests/pipeline_rx.rs"
