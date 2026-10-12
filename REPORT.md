@@ -180,25 +180,27 @@ note.
 
 ## 6. Verification — observed output
 
-**Ad-hoc verification (run in this session, script since removed):**
+**Ad-hoc verification (re-run at head `a3dc0747`, script since removed):**
 
 A focused script at `~/.cache/hermes/tmp/hermes-verify-p12.sh` was run against
-the worktree. It is *ad-hoc*, not a project-canonical gate: it checks that the
-library builds in both configurations and that the three test targets report
-zero failures. It does not replace the crate's own suite.
+the worktree. It is *ad-hoc*, not a project-canonical gate: it re-derives the
+6-byte header constant from source, builds both configurations, and asserts the
+three test targets report zero failures. It does not replace the crate's suite.
 
 ```
 == 1. library builds in both configurations ==
-  default (no_std)                                           ok
-  --features std                                             ok
-== 2. changed behaviour: TX -> RX round trip, checked out-of-crate ==
-  pipeline_tx passed                                         ok   (32)
-  pipeline_tx failed                                         ok   (0)
-== 3. previously-failing suites are green ==
-  erasure_vectors failed                                     ok   (15 passed)
-  row_weights failed                                         ok   (1 passed)
-== 4. no_std build has no std-only symbols leaking into the radio path ==
-  no_std build                                               ok
+  default (no_std)                                         ok
+  --features std                                           ok
+== 2. header layout matches the spec (6 bytes: blk2 idx1 cnt1 crc2) ==
+  HEADER_SIZE == 6                                         ok
+== 3. TX test target: 32 tests, 0 failures ==
+  pipeline_tx passed                                       ok
+  pipeline_tx failed                                       ok
+== 4. previously-failing suites are green ==
+  erasure_vectors failed                                   ok   (passed=15)
+  row_weights failed                                       ok   (passed=1)
+== 5. default (no_std) suite green too ==
+  no_std suite failed                                      ok
 VERIFY: PASS
 ```
 
