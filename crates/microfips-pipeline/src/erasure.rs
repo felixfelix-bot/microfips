@@ -123,10 +123,15 @@ fn xor_line(dst: &mut [u8], src: &[u8], size: usize) {
 /// it is written to row `accepted` and the count grows by one — or `None` when
 /// it reduces to zero (linearly dependent, adds no information).
 ///
-/// The basis is kept in strict row-echelon form: each accepted row's leading
-/// (lowest-index) set bit is stored in `pivots[row]`. Reduction therefore
-/// works by clearing the candidate's bit at each existing pivot with a single
-/// row XOR, which is the standard GF(2) insertion algorithm.
+/// The basis is kept in row-echelon form: each accepted row's leading
+/// (lowest-index) set bit is stored in `pivots[row]`.
+///
+/// Reduction XORs *whole* rows rather than only the tail from the pivot byte.
+/// The tail-only optimisation is valid only when the basis is in *reduced*
+/// echelon form (each pivot column clear in every other row); rows here are
+/// accepted in arrival order, so an earlier pivot's XOR can reintroduce bits
+/// at a later pivot and a single sweep would then mis-classify independent
+/// rows as dependent. Sweeping to a fixed point avoids that.
 fn echelon_insert(
     a: &mut [u8],
     pivots: &mut [usize],
@@ -137,15 +142,20 @@ fn echelon_insert(
     let mut work = [0u8; MAX_FRAGS / 8 + 1];
     work[..row_bytes].copy_from_slice(&candidate[..row_bytes]);
 
-    for row in 0..accepted {
-        let pivot_col = pivots[row];
-        if pivot_col == usize::MAX {
-            continue;
-        }
-        if (work[pivot_col >> 3] >> (pivot_col & 7)) & 1 == 1 {
-            let row_base = row * row_bytes;
-            for byte in pivot_col / 8..row_bytes {
-                work[byte] ^= a[row_base + byte];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for row in 0..accepted {
+            let pivot_col = pivots[row];
+            if pivot_col == usize::MAX {
+                continue;
+            }
+            if (work[pivot_col >> 3] >> (pivot_col & 7)) & 1 == 1 {
+                let row_base = row * row_bytes;
+                for byte in 0..row_bytes {
+                    work[byte] ^= a[row_base + byte];
+                }
+                changed = true;
             }
         }
     }
@@ -428,6 +438,7 @@ impl<'a> ErasureDecoder<'a> {
                     &covered[..ncovered],
                     &missing_indices[..n]
                 );
+                std::eprintln!("    raw bits {:?}", &src[..src_row_bytes]);
             }
 
             // RHS: the raw payload minus every *already-known* original in the

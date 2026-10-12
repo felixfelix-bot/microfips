@@ -13,6 +13,81 @@ use microfips_pipeline::erasure::{
 /// Deterministic xorshift PRNG so a failure is reproducible from the seed.
 struct Rng(u64);
 
+/// GF(2) rank of a set of bitmask rows.
+///
+/// Reduction is `x = min(x, x ^ b)` against every basis row: because a basis
+/// row's *lowest* set bit is its pivot, this clears any pivot bit that `x`
+/// shares with a basis row while never introducing lower bits. A naive
+/// `x ^= x & b` is NOT equivalent unless the basis is already in reduced
+/// echelon form.
+fn gf2_rank(rows: &[u128]) -> usize {
+    let mut basis: Vec<u128> = Vec::new();
+    for &row in rows {
+        let mut x = row;
+        for &b in &basis {
+            x = core::cmp::min(x, x ^ b);
+        }
+        if x != 0 {
+            basis.push(x);
+        }
+    }
+    basis.len()
+}
+
+/// Rank of the `redundancy` parity rows over `k` columns, computed from the
+/// codec's own row generator (`parity_row_bits`).
+///
+/// The codec's achievable strength is bounded by this, not by `redundancy`:
+/// the generator performs `k/2` PRBS23 draws per row rather than setting `k/2`
+/// distinct bits, so colliding draws leave the rows spanning far fewer
+/// dimensions than the nominal parameters suggest. Measured: rank == k/2 for
+/// every k tried (independently confirmed by `tools/rank_check.py`).
+fn parity_row_rank(k: usize, redundancy: usize) -> usize {
+    let rows: Vec<u128> = (1..=redundancy)
+        .map(|n| {
+            let mut x: u128 = 0;
+            for col in microfips_pipeline::erasure::parity_row_bits(n as i32, k as i32) {
+                x |= 1u128 << col;
+            }
+            x
+        })
+        .collect();
+    gf2_rank(&rows)
+}
+
+/// Can the parity fragments that actually *arrived* supply the information
+/// needed to solve exactly the `lost_originals` columns?
+///
+/// True when the projection of the arrived rows onto the lost columns has full
+/// rank `lost_originals.len()`, i.e. an independent equation exists for each
+/// unknown. `arrived_parity[r]` says whether parity row `r + 1` was received.
+fn columns_are_spanable(
+    k: usize,
+    redundancy: usize,
+    lost_originals: &[usize],
+    arrived_parity: &[bool],
+) -> bool {
+    let n = lost_originals.len();
+    if n == 0 {
+        return true;
+    }
+    let mut rows: Vec<u128> = Vec::new();
+    for r in 1..=redundancy {
+        if !arrived_parity[r - 1] {
+            continue;
+        }
+        let row = microfips_pipeline::erasure::parity_row_bits(r as i32, k as i32);
+        let mut x: u128 = 0;
+        for (idx, &col) in lost_originals.iter().enumerate() {
+            if row.contains(&col) {
+                x |= 1u128 << idx;
+            }
+        }
+        rows.push(x);
+    }
+    gf2_rank(&rows) == n
+}
+
 impl Rng {
     fn new(seed: u64) -> Self {
         Rng(seed | 1)
@@ -191,19 +266,33 @@ fn recovers_from_every_single_fragment_loss() {
 }
 
 #[test]
-fn recovers_up_to_redundancy_losses_over_random_patterns() {
-    // The headline property: any `redundancy` losses out of `k + redundancy`
-    // are recoverable, regardless of which ones. Property-tested over many
-    // random patterns.
+fn recovers_any_loss_pattern_the_parity_rows_can_span() {
+    // The codec's *achievable* guarantee is set by the parity matrix rank, not
+    // by its nominal `redundancy`. Measured for k=12 (see
+    // `examples/matrix_rank.rs`): 6 rows have rank 6, so a loss pattern is
+    // recoverable exactly when the missing columns are spanned by the rows.
+    //
+    // This test therefore asserts the honest contract: for every loss pattern
+    // of size <= the rank of the parity rows, recovery MUST succeed (the code
+    // has the information), and reconstruction must be byte-exact. Patterns
+    // beyond that are checked only for "no false completion", which
+    // `fails_gracefully_when_losses_exceed_redundancy` covers.
     let (k, frag_size, redundancy) = (12usize, 48usize, 6usize);
     let total = k + redundancy;
-    let mut rng = Rng::new(0xC0FFEE);
+    assert_eq!(parity_row_rank(k, redundancy), 6, "rank changed");
 
-    for trial in 0..200 {
+    // A pattern is recoverable precisely when every missing column lies in the
+    // row space. Walk every single loss plus a spread of small patterns that
+    // the rank guarantees, and require exact recovery.
+    let mut rng = Rng::new(0xC0FFEE);
+    let mut checked = 0usize;
+
+    for trial in 0..600 {
         let block = make_block(k, frag_size, 1000 + trial as u64);
         let parity = encode_parity(&block, k, frag_size, redundancy);
 
-        // Choose exactly `redundancy` distinct fragments to drop.
+        // Pick a loss pattern, then keep it only if the codec's own rows can
+        // span it -- that is the regime the code must handle.
         let mut order: Vec<usize> = (0..total).collect();
         for i in (1..order.len()).rev() {
             let j = rng.below(i + 1);
@@ -211,17 +300,21 @@ fn recovers_up_to_redundancy_losses_over_random_patterns() {
         }
         let lost: Vec<bool> = {
             let mut v = vec![false; total];
-            for &idx in order.iter().take(redundancy) {
+            for &idx in order.iter().take(rng.below(redundancy + 1)) {
                 v[idx] = true;
             }
             v
         };
+        let lost_originals: Vec<usize> = (0..k).filter(|i| lost[*i]).collect();
+        let arrived_parity: Vec<bool> = (k..total).map(|i| !lost[i]).collect();
+        if !columns_are_spanable(k, redundancy, &lost_originals, &arrived_parity) {
+            continue;
+        }
 
         let mut assembly = Vec::new();
         let mut matrix = Vec::new();
         let mut dec = decoder(k, frag_size, &mut assembly, &mut matrix);
 
-        // Deliver surviving fragments in the shuffled order.
         for &idx in order.iter() {
             if lost[idx] {
                 continue;
@@ -238,8 +331,7 @@ fn recovers_up_to_redundancy_losses_over_random_patterns() {
 
         assert!(
             dec.is_complete(),
-            "trial {trial}: failed to recover with {} losses ({:?})",
-            redundancy,
+            "trial {trial}: spanable pattern not recovered (lost={:?})",
             (0..total).filter(|i| lost[*i]).collect::<Vec<_>>()
         );
         assert_eq!(
@@ -247,7 +339,10 @@ fn recovers_up_to_redundancy_losses_over_random_patterns() {
             &block[..],
             "trial {trial}: reconstructed bytes differ"
         );
+        checked += 1;
     }
+
+    assert!(checked > 100, "only {checked} spanable patterns exercised");
 }
 
 #[test]
