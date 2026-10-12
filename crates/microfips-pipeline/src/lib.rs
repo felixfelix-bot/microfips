@@ -26,6 +26,22 @@ extern crate alloc;
 pub mod erasure;
 pub mod fragment;
 
+/// Debug switch for the GE solver trace, settable from tests/examples.
+#[cfg(feature = "std")]
+pub static GE_TRACE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+#[inline]
+pub(crate) fn ge_trace_enabled() -> bool {
+    #[cfg(feature = "std")]
+    {
+        GE_TRACE.load(core::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        false
+    }
+}
+
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;

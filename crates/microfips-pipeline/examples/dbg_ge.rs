@@ -21,6 +21,7 @@ fn make_block(k: usize, frag_size: usize, seed: u64) -> Vec<u8> {
 }
 
 fn main() {
+    microfips_pipeline::GE_TRACE.store(true, std::sync::atomic::Ordering::Relaxed);
     let (k, frag_size, redundancy) = (12usize, 48usize, 6usize);
     let total = k + redundancy;
     let mut rng = Rng::new(0xC0FFEE);

@@ -91,12 +91,85 @@ fn get_parity(index: usize, matrix_row: &[u8]) -> bool {
     (matrix_row[index >> 3] >> (index & 7)) & 1 == 1
 }
 
+/// The set of column indices set in parity row `n` for `m` originals.
+///
+/// Exposed for diagnostics: the codec's effective strength is bounded by these
+/// rows' actual weights and mutual independence, not by its nominal parameters.
+/// See `examples/matrix_rank.rs`.
+pub fn parity_row_bits(n: i32, m: i32) -> alloc::vec::Vec<usize> {
+    let mut row = [0u8; (MAX_FRAGS >> 3) + 1];
+    get_parity_matrix_row(n, m, &mut row);
+    let mut out = alloc::vec::Vec::new();
+    for i in 0..m as usize {
+        if get_parity(i, &row) {
+            out.push(i);
+        }
+    }
+    out
+}
+
 /// `dst ^= src`, byte-wise.
 #[inline]
 fn xor_line(dst: &mut [u8], src: &[u8], size: usize) {
     for i in 0..size {
         dst[i] ^= src[i];
     }
+}
+
+/// Add `candidate` to the row-echelon basis `a` (which holds `accepted` rows of
+/// `row_bytes` bytes each), reducing it against the existing rows.
+///
+/// Returns `Some(new_accepted)` when the candidate is linearly independent —
+/// it is written to row `accepted` and the count grows by one — or `None` when
+/// it reduces to zero (linearly dependent, adds no information).
+///
+/// The basis is kept in strict row-echelon form: each accepted row's leading
+/// (lowest-index) set bit is stored in `pivots[row]`. Reduction therefore
+/// works by clearing the candidate's bit at each existing pivot with a single
+/// row XOR, which is the standard GF(2) insertion algorithm.
+fn echelon_insert(
+    a: &mut [u8],
+    pivots: &mut [usize],
+    accepted: usize,
+    candidate: &[u8],
+    row_bytes: usize,
+) -> Option<usize> {
+    let mut work = [0u8; MAX_FRAGS / 8 + 1];
+    work[..row_bytes].copy_from_slice(&candidate[..row_bytes]);
+
+    for row in 0..accepted {
+        let pivot_col = pivots[row];
+        if pivot_col == usize::MAX {
+            continue;
+        }
+        if (work[pivot_col >> 3] >> (pivot_col & 7)) & 1 == 1 {
+            let row_base = row * row_bytes;
+            for byte in pivot_col / 8..row_bytes {
+                work[byte] ^= a[row_base + byte];
+            }
+        }
+    }
+
+    // Leading bit of what is left becomes this row's pivot.
+    let mut pivot_col = usize::MAX;
+    'scan: for byte in 0..row_bytes {
+        if work[byte] != 0 {
+            for bit in 0..8 {
+                if (work[byte] >> bit) & 1 == 1 {
+                    pivot_col = byte * 8 + bit;
+                    break 'scan;
+                }
+            }
+        }
+    }
+    if pivot_col == usize::MAX {
+        return None;
+    }
+
+    let dst = accepted * row_bytes;
+    a[dst..dst + row_bytes].copy_from_slice(&work[..row_bytes]);
+    pivots[accepted] = pivot_col;
+    Some(accepted + 1)
 }
 
 /// Encode redundancy: `ErasureEncoder::new(k, block_size)` in the C API.
@@ -288,6 +361,16 @@ impl<'a> ErasureDecoder<'a> {
             return;
         }
 
+        if crate::ge_trace_enabled() {
+            extern crate std;
+            std::eprintln!(
+                "ge_solve: m2b_rows={} num_missing={} missing={:?}",
+                self.m2b_rows,
+                num_missing,
+                &missing_indices[..num_missing]
+            );
+        }
+
         let n = num_missing;
         let row_bytes = matrix_row_bytes(n);
 
@@ -302,8 +385,23 @@ impl<'a> ErasureDecoder<'a> {
             *x = 0;
         }
 
+        // Build the projected system, keeping every equation that still has at
+        // least one unknown. Rows arrive in queue order, which is arrival order
+        // of the parity fragments.
+        //
+        // NOTE ON THE C ORIGINAL: erasure.c requires `valid_rows >= n` counting
+        // rows *prefix-wise* and bails otherwise, then runs elimination without
+        // a rank check. Two consequences, both observed on the reference C
+        // (tools/c_ref_check.c): (a) an equation that is linearly dependent on
+        // earlier ones still consumes one of the n slots, so the matrix can be
+        // singular and the whole solve is abandoned even though enough
+        // independent equations arrived; (b) rows are only ever *appended*
+        // projected at insertion time, so solving some originals can strand
+        // later rows. This port fixes both by selecting rows by rank and
+        // re-projecting against the live missing set on every attempt.
         let src_row_bytes = matrix_row_bytes(self.frag_nb);
         let mut valid_rows = 0;
+        let mut pivots = [usize::MAX; MAX_FRAGS];
         for row in 0..self.m2b_rows {
             if valid_rows >= n {
                 break;
@@ -311,30 +409,70 @@ impl<'a> ErasureDecoder<'a> {
             let src_off = row * src_row_bytes;
             let src = &self.matrix_m2b[src_off..src_off + src_row_bytes];
             let data_off = self.pending_parity_offset(row);
-            let src_data = &self.assembly_buf[data_off..data_off + self.frag_size];
 
             // Project the row onto the missing columns.
-            let dst_base = valid_rows * row_bytes;
+            let mut projected = [0u8; MAX_FRAGS / 8 + 1];
+            let mut covered = [0usize; MAX_FRAGS];
+            let mut ncovered = 0;
             for col in 0..n {
                 if get_parity(missing_indices[col], src) {
-                    a[dst_base + (col >> 3)] |= 1 << (col & 7);
+                    projected[col >> 3] |= 1 << (col & 7);
+                    covered[ncovered] = col;
+                    ncovered += 1;
                 }
             }
-
-            let bits_set: u32 = a[dst_base..dst_base + row_bytes]
-                .iter()
-                .map(|byte| byte.count_ones())
-                .sum();
-            if bits_set == 0 {
-                continue;
+            if crate::ge_trace_enabled() {
+                extern crate std;
+                std::eprintln!(
+                    "  ge row={row} covers {:?} of missing {:?}",
+                    &covered[..ncovered],
+                    &missing_indices[..n]
+                );
             }
 
-            let b_off = valid_rows * self.frag_size;
-            b[b_off..b_off + self.frag_size].copy_from_slice(src_data);
-            valid_rows += 1;
+            // RHS: the raw payload minus every *already-known* original in the
+            // row, so the system is expressed purely in the unknown columns.
+            let mut rhs = [0u8; MAX_FRAG_SIZE];
+            let src_data = &self.assembly_buf[data_off..data_off + self.frag_size];
+            rhs[..self.frag_size].copy_from_slice(src_data);
+            for known in 0..self.frag_nb {
+                if !get_parity(known, src) {
+                    continue;
+                }
+                if self.find_missing_index(known).is_some() {
+                    continue;
+                }
+                let off = self.original_offset(known);
+                let mut cur = [0u8; MAX_FRAG_SIZE];
+                cur[..self.frag_size]
+                    .copy_from_slice(&self.assembly_buf[off..off + self.frag_size]);
+                xor_line(&mut rhs, &cur, self.frag_size);
+            }
+
+            // Accept the row only if it is linearly independent of the ones
+            // already taken; dependent rows carry no new information and would
+            // make the system singular.
+            match echelon_insert(
+                &mut a,
+                &mut pivots,
+                valid_rows,
+                &projected[..row_bytes],
+                row_bytes,
+            ) {
+                Some(next) => {
+                    let b_off = valid_rows * self.frag_size;
+                    b[b_off..b_off + self.frag_size].copy_from_slice(&rhs[..self.frag_size]);
+                    valid_rows = next;
+                }
+                None => continue,
+            }
         }
 
         if valid_rows < n {
+            if crate::ge_trace_enabled() {
+                extern crate std;
+                std::eprintln!("  ge: BAIL valid_rows={valid_rows} < n={n}");
+            }
             return;
         }
 
@@ -359,9 +497,15 @@ impl<'a> ErasureDecoder<'a> {
             }
 
             if !get_parity(pivot, &a[prow_base..prow_base + row_bytes]) {
+                if crate::ge_trace_enabled() {
+                    extern crate std;
+                    std::eprintln!("  ge: BAIL singular pivot={pivot} n={n}");
+                }
                 return;
             }
 
+            // Eliminate this pivot bit from every other row (full reduction,
+            // not just the rows below).
             for elim in 0..n {
                 if elim == pivot {
                     continue;
@@ -436,6 +580,11 @@ impl<'a> ErasureDecoder<'a> {
                 return DecodeStatus::Complete;
             }
             self.frags_received += 1;
+            // An original arriving may be the last one a queued parity row was
+            // waiting for, so try to drain the pending equations here too.
+            if self.try_drain_pending() {
+                return DecodeStatus::Complete;
+            }
             return DecodeStatus::Progress;
         }
 
@@ -448,132 +597,166 @@ impl<'a> ErasureDecoder<'a> {
             &mut matrix_row,
         );
 
-        let mut temp_data = [0u8; MAX_FRAG_SIZE];
-        temp_data[..self.frag_size].copy_from_slice(&raw_data[..self.frag_size]);
-
-        // XOR out every original in this row that we already have.
+        // Store the fragment as a *permanent, full-fidelity* equation:
+        //   XOR{ original[i] : row bit i set } = raw parity payload
+        // Both halves are kept raw -- the row bits cover every original (not
+        // just the currently-missing ones) and the payload still contains the
+        // contributions of already-received originals. This is what lets the
+        // same row be re-projected against a *different* missing set later, in
+        // any order, which is the property the C original's append-time
+        // projection destroys (see the `ge_solve` note).
+        let row_bytes = matrix_row_bytes(self.frag_nb);
+        if self.m2b_rows >= MAX_REDUNDANCY {
+            // A block can never carry more distinct parity fragments than this.
+            return DecodeStatus::Invalid;
+        }
+        for b in self.matrix_m2b[self.m2b_rows * row_bytes..(self.m2b_rows + 1) * row_bytes]
+            .iter_mut()
+        {
+            *b = 0;
+        }
         for i in 0..self.frag_nb {
-            if get_parity(i, &matrix_row) && self.find_missing_index(i).is_none() {
-                let off = self.original_offset(i);
-                // Avoid a double borrow: copy the operand out first.
-                let mut cur = [0u8; MAX_FRAG_SIZE];
-                cur[..self.frag_size]
-                    .copy_from_slice(&self.assembly_buf[off..off + self.frag_size]);
-                xor_line(&mut temp_data, &cur, self.frag_size);
+            if get_parity(i, &matrix_row) {
+                self.matrix_m2b[self.m2b_rows * row_bytes + (i >> 3)] |= 1 << (i & 7);
             }
         }
 
-        // How many still-missing originals does this row touch?
-        let mut num_in_row = 0;
-        for i in 0..self.frag_nb {
-            if get_parity(i, &matrix_row) && self.find_missing_index(i).is_some() {
-                num_in_row += 1;
-            }
+        let data_off = self.pending_parity_offset(self.m2b_rows);
+        self.assembly_buf[data_off..data_off + self.frag_size]
+            .copy_from_slice(&raw_data[..self.frag_size]);
+
+        self.m2b_rows += 1;
+
+        if crate::ge_trace_enabled() {
+            extern crate std;
+            std::eprintln!(
+                "  parity counter={} redo_idx={} m2b_rows={} lost={}",
+                counter,
+                redundancy_idx,
+                self.m2b_rows,
+                self.frag_nb_lost
+            );
         }
 
-        if num_in_row == 1 {
-            // Fully determined: solve it directly.
-            for i in 0..self.frag_nb {
-                if get_parity(i, &matrix_row) && self.find_missing_index(i).is_some() {
-                    let off = self.original_offset(i);
-                    self.assembly_buf[off..off + self.frag_size]
-                        .copy_from_slice(&temp_data[..self.frag_size]);
-                    self.mark_received(i);
-                    break;
-                }
-            }
-            if self.frag_nb_lost == 0 {
-                self.complete = true;
-                return DecodeStatus::Complete;
-            }
-        } else if num_in_row > 1 {
-            // Queue the row for Gaussian elimination.
-            let row_bytes = matrix_row_bytes(self.frag_nb);
-            for b in self.matrix_m2b[self.m2b_rows * row_bytes..(self.m2b_rows + 1) * row_bytes]
-                .iter_mut()
-            {
-                *b = 0;
-            }
-            for i in 0..self.frag_nb {
-                if get_parity(i, &matrix_row) && self.find_missing_index(i).is_some() {
-                    self.matrix_m2b[self.m2b_rows * row_bytes + (i >> 3)] |= 1 << (i & 7);
-                }
-            }
-
-            let data_off = self.pending_parity_offset(self.m2b_rows);
-            self.assembly_buf[data_off..data_off + self.frag_size]
-                .copy_from_slice(&temp_data[..self.frag_size]);
-
-            self.m2b_rows += 1;
-
-            if self.m2b_rows >= self.frag_nb_lost {
-                self.ge_solve();
-                if self.complete {
-                    return DecodeStatus::Complete;
-                }
-            }
-        }
-
+        // A single stored equation may already determine an original on its own
+        // (after the received ones are subtracted); `try_drain_pending` covers
+        // that, so no special case is needed here.
         self.frags_received += 1;
 
-        if self.m2b_rows >= 2 && !self.complete {
-            self.ge_solve();
-            if self.complete {
-                return DecodeStatus::Complete;
-            }
-        }
-
-        // Retry pass: newly solved originals can make an earlier queued row
-        // fully determined.
-        for retry in 0..self.m2b_rows {
-            if self.complete {
-                break;
-            }
-            let row_bytes = matrix_row_bytes(self.frag_nb);
-            let row_off = retry * row_bytes;
-            let mut only_missing = usize::MAX;
-            let mut count = 0;
-            for i in 0..self.frag_nb {
-                if get_parity(i, &self.matrix_m2b[row_off..row_off + row_bytes])
-                    && self.find_missing_index(i).is_some()
-                {
-                    only_missing = i;
-                    count += 1;
-                }
-            }
-            if count == 1 && only_missing != usize::MAX {
-                let mut temp = [0u8; MAX_FRAG_SIZE];
-                let src_off = self.pending_parity_offset(retry);
-                temp[..self.frag_size]
-                    .copy_from_slice(&self.assembly_buf[src_off..src_off + self.frag_size]);
-
-                // Copy the row bits out so the borrow ends before mutation.
-                let mut row_bits = [0u8; (MAX_FRAGS >> 3) + 1];
-                row_bits[..row_bytes]
-                    .copy_from_slice(&self.matrix_m2b[row_off..row_off + row_bytes]);
-
-                for i in 0..self.frag_nb {
-                    if get_parity(i, &row_bits) && self.find_missing_index(i).is_none() {
-                        let off = self.original_offset(i);
-                        let mut cur = [0u8; MAX_FRAG_SIZE];
-                        cur[..self.frag_size]
-                            .copy_from_slice(&self.assembly_buf[off..off + self.frag_size]);
-                        xor_line(&mut temp, &cur, self.frag_size);
-                    }
-                }
-
-                let off = self.original_offset(only_missing);
-                self.assembly_buf[off..off + self.frag_size]
-                    .copy_from_slice(&temp[..self.frag_size]);
-                self.mark_received(only_missing);
-                if self.frag_nb_lost == 0 {
-                    self.complete = true;
-                    return DecodeStatus::Complete;
-                }
-            }
+        if self.try_drain_pending() {
+            return DecodeStatus::Complete;
         }
 
         DecodeStatus::Progress
+    }
+
+    /// Run the pending-equation solvers and report whether the block completed.
+    ///
+    /// Called after *any* fragment makes progress, not just parity fragments.
+    /// Two solver passes are applied, in a loop, because each can unlock the
+    /// other:
+    ///
+    /// 1. **Single-unknown pass** — a stored equation whose only remaining
+    ///    unknown is one original solves it directly (subtract the known ones).
+    ///    Cheap and exact; covers the common case where parity fragments arrive
+    ///    one at a time.
+    /// 2. **Gaussian elimination** — when enough independent equations have
+    ///    accumulated, solve the whole missing set at once.
+    ///
+    /// The C original runs pass 2 before pass 1 and only inside the redundancy
+    /// branch, which strands recoveries whenever the last originals needed to
+    /// make `m2b_rows >= frag_nb_lost` true arrive after every usable parity
+    /// fragment already has: the one-shot check is evaluated against a
+    /// still-too-high `frag_nb_lost`, and later original arrivals never
+    /// re-evaluate it. Repro: k=12, 6 parity, originals 0,4,6,9,10 plus parity#1
+    /// lost — `tools/c_ref_check.c` shows the reference C failing this case.
+    fn try_drain_pending(&mut self) -> bool {
+        if self.complete {
+            return true;
+        }
+
+        loop {
+            let before = self.frag_nb_lost;
+
+            // Pass 1: equations with exactly one unknown left.
+            self.solve_single_unknown_rows();
+            if self.frag_nb_lost == 0 {
+                self.complete = true;
+                return true;
+            }
+
+            // Pass 2: full elimination over every stored equation.
+            if self.m2b_rows >= 2 {
+                self.ge_solve();
+                if self.complete {
+                    return true;
+                }
+            }
+
+            if self.frag_nb_lost == before {
+                // No progress this round; nothing more can be squeezed out
+                // until another fragment arrives.
+                break;
+            }
+        }
+
+        self.complete
+    }
+
+    /// Solve every stored equation that has exactly one unknown remaining.
+    ///
+    /// Because stored equations keep raw payloads, the known originals in the
+    /// row are XORed out of a copy of the payload before it is written back as
+    /// the missing original's value.
+    fn solve_single_unknown_rows(&mut self) {
+        let row_bytes = matrix_row_bytes(self.frag_nb);
+
+        for row in 0..self.m2b_rows {
+            if self.complete {
+                return;
+            }
+            let row_off = row * row_bytes;
+            let mut only_missing = usize::MAX;
+            let mut count = 0usize;
+            {
+                let bits = &self.matrix_m2b[row_off..row_off + row_bytes];
+                for i in 0..self.frag_nb {
+                    if get_parity(i, bits) && self.find_missing_index(i).is_some() {
+                        only_missing = i;
+                        count += 1;
+                    }
+                }
+            }
+            if count != 1 || only_missing == usize::MAX {
+                continue;
+            }
+
+            // Copy the raw payload, then subtract every *known* original in the
+            // row; what remains is the single unknown's value.
+            let mut temp = [0u8; MAX_FRAG_SIZE];
+            let src_off = self.pending_parity_offset(row);
+            temp[..self.frag_size]
+                .copy_from_slice(&self.assembly_buf[src_off..src_off + self.frag_size]);
+
+            let mut row_bits = [0u8; (MAX_FRAGS >> 3) + 1];
+            row_bits[..row_bytes]
+                .copy_from_slice(&self.matrix_m2b[row_off..row_off + row_bytes]);
+
+            for i in 0..self.frag_nb {
+                if get_parity(i, &row_bits) && self.find_missing_index(i).is_none() {
+                    let off = self.original_offset(i);
+                    let mut cur = [0u8; MAX_FRAG_SIZE];
+                    cur[..self.frag_size]
+                        .copy_from_slice(&self.assembly_buf[off..off + self.frag_size]);
+                    xor_line(&mut temp, &cur, self.frag_size);
+                }
+            }
+
+            let off = self.original_offset(only_missing);
+            self.assembly_buf[off..off + self.frag_size]
+                .copy_from_slice(&temp[..self.frag_size]);
+            self.mark_received(only_missing);
+        }
     }
 
     pub fn is_complete(&self) -> bool {
