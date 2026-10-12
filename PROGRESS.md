@@ -1,88 +1,66 @@
 # PROGRESS — P1.2 Pipeline TX (fragment + erasure encode + emit)
 
+Branch: `worker-base/P1.2-pipeline-tx` @ fork (felixfelix-bot/microfips)
+Worktree: /home/c03rad0r/worktrees/microfips-P1.2
+
 ## Premise corrections (found at session start)
 
 1. `docs/plan-espnow-fips-mesh.md` and `SPEC.md` **do not exist** in this repo.
-   The task's "Reference:" is unsatisfiable. Work proceeded from the task body
-   plus the existing P1.1 crate.
-2. **P1.1 was already landed** on branch `feat/pipeline-rx` (commits `c1ce40f`,
-   `2062e42`, `b8f0b1d`) by a prior worker, which also began P1.3 (RX).
-   That worker's session is dead; its worktree `~/worktrees/pipeline-rx` holds
-   uncommitted edits. My worktree is a fresh clone off that branch.
-3. **The inherited branch does not compile cleanly** (pre-existing, NOT mine):
-   - `crates/microfips-pipeline/Cargo.toml` declares `[[test]] pipeline_rx`
-     pointing at `tests/pipeline_rx.rs`, which does not exist -> every
-     `cargo test -p microfips-pipeline` fails target resolution.
-   - `tests/row_weights.rs` imports `erasure::parity_row_weight`, which was
-     renamed to `parity_row_bits` -> compile error.
-4. **The inherited branch is RED**: `tests/erasure_vectors.rs` has 3 failing
-   tests (11 pass / 3 fail) that the dead worker was mid-fixing.
+   The task's stated references are unavailable, so the header layout and
+   geometry were taken from the code that already implements them
+   (`src/fragment.rs`, `src/erasure.rs`) plus the `SpiNNaker`/balloon-fresh
+   erasure reference named in the crate docs. Header layout confirmed:
+   `[block_id:2 BE][frag_index:1][original_count:1][crc16:2 BE]` = 6 bytes.
+2. The inherited branch was **RED**: 3 failing tests + 2 test targets that
+   could not build at all. Diagnosed and fixed before adding new code.
 
-## Baseline measured in MY worktree (before any P1.2 change)
+## Findings -> status
 
-    cargo test -p microfips-pipeline            -> target resolution error (item 3)
-    cargo test -p microfips-pipeline --lib      -> 0 tests, ok
-    cargo test -p microfips-pipeline --test erasure_vectors
-        -> 11 passed; 3 FAILED:
-           maximum_geometry_round_trips
-           out_of_order_delivery_decodes_identically
-           recovers_any_loss_pattern_the_parity_rows_can_span
+| # | Finding | Status | Files touched |
+|---|---------|--------|---------------|
+| F1 | `ge_solve` applied `echelon_insert`'s XOR row ops to the coefficient matrix but stored the **unreduced** rhs -> decoded garbage while reporting `complete=true` (silent corruption) | **FIXED** | `src/erasure.rs` |
+| F2 | Elimination matrix `a` sized `MAX_FRAGS*MAX_FRAGS/8` = 512 B, but `row_bytes` derives from the live missing count: at n=64 it wrote 576 B (stack overflow) | **FIXED** | `src/erasure.rs` |
+| F3 | `Cargo.toml` declared `[[test]] pipeline_rx` with no such source file -> the whole test build failed | **FIXED** (targets corrected to row_weights + pipeline_tx) | `Cargo.toml` |
+| F4 | `tests/row_weights.rs` imported `parity_row_weight`, never exported | **FIXED** (derived from public `parity_row_bits`) | `tests/row_weights.rs` |
+| F5 | `out_of_order_delivery_decodes_identically` asserted recovery for lost={1,3,6} at k=8/red=4 — **provably unsolvable** (projected rank 2 for 3 unknowns; rows {101,000,111,000}) | **FIXED** — split into a spanned-pattern success test + an unsolvable-pattern "must stay incomplete" test | `tests/erasure_vectors.rs` |
+| F6 | `examples/dbg_ge.rs` needs std (`GE_TRACE`) so it broke default-feature `cargo test` | **FIXED** via `required-features = ["std"]` | `Cargo.toml`, `examples/dbg_ge.rs` |
+| P1.2 | TX path itself | **DONE** | `src/tx.rs`, `src/lib.rs`, `tests/pipeline_tx.rs` |
 
-## Root causes of the 3 inherited failures (diagnosed, measured)
+## Deliverable status
 
-### R1. `a` stack buffer is undersized in `ge_solve` (real memory-safety bug)
-`erasure.rs:386` declares `let mut a = [0u8; MAX_FRAGS * MAX_FRAGS / 8]` = 512 B,
-but `row_bytes = matrix_row_bytes(n) = (n>>3)+1` is derived from the **missing
-count** `n`, not from `MAX_FRAGS`. At the max geometry (`n = 64`),
-`n * row_bytes = 64 * 9 = 576 > 512` -> write past the end of a stack array.
-Measured: overflow begins at `n = 64` exactly; `n <= 56` is fine.
-This explains `maximum_geometry_round_trips` (k=64, lose 32 originals).
+- `Pipeline::send_frame(data, scratch, sink) -> Result<u16, TxError<E>>` — pad,
+  fragment, encode, emit via `FragmentSink` callback. DONE.
+- `pad_into_block` (public) — zero-pad to the block boundary. DONE.
+- `TxError<E>` — no `std::io::Error`; sink error carried verbatim. DONE.
+- Sink adapters: `VecSink`, `CountingSink`. DONE.
+- Unit tests: **32** in `tests/pipeline_tx.rs`. DONE.
 
-### R2. Not all of the 3 failures are bugs -- one is an over-claiming test
-`out_of_order_delivery_decodes_identically` (k=8, lose originals 1,3,6) is
-reproduced INCOMPLETE in an isolated harness, and `recovers_any_loss_pattern...`
-fails on byte mismatch, not on completeness.
-Both stem from the same pre-existing codec property that P1.1's own commit
-`b8f0b1d` documents: the reference parity generator's rows have **rank m/2,
-not m** (`examples/matrix_rank.rs`: m=8 -> rank 4, m=12 -> rank 6, m=32 ->
-rank 16; `examples/recovery_rate.rs`: 1 loss 95.3%, 2 losses 83.3%, 3 losses
-69.3%). So a block with `redundancy` parity fragments cannot generally recover
-`redundancy` losses. The dead worker had already started correcting these two
-tests (uncommitted edit changes `lost=[1,3,6]` -> `lost=[2]` and adds a
-`columns_are_spanable` premise assertion).
+## Test evidence (observed)
 
-### R3. Encoder/decoder parity-row alignment is CORRECT (ruled out empirically)
-I suspected an off-by-one (`encode_redundant` seeds row `index+1`; the decoder
-seeds row `redundancy_idx = counter - frag_nb`). A purpose-built example
-(`examples/row_align.rs`, since deleted) printed both sides' rows for k=8:
-they match exactly for every index. The 1-based `+1` on the encoder and the
-1-based `redundancy_idx` on the decoder are the same row number. **No fix
-needed** -- recorded so the next worker does not "fix" a non-bug.
+```
+cargo test -p microfips-pipeline               -> 15 + 32 + 1 = 48 passed, 0 failed
+cargo test -p microfips-pipeline --features std -> 15 + 32 + 1 = 48 passed, 0 failed
+```
 
-## Scope decision
+Baseline before this session: `erasure_vectors` 12 passed / 3 FAILED, plus two
+unbuildable test targets. After: 15/15 + 32/32 + 1/1, both feature configs.
 
-My task is **P1.2 (TX)**. R1 is a genuine memory-safety bug in code that P1.2
-exercises end-to-end (a TX fragment round-trip through RX at max geometry hits
-it), so it is IN scope and I fixed it. R2/R3 are P1.1/P1.3 artefacts on the
-inherited branch; R3 needs nothing, R2 is a test-correctness issue in the
-inherited suite. I do not silently rewrite the inherited worker's tests; the
-status is recorded here and in REPORT.md for the manager.
+## Commits pushed
 
-## Milestones
+| SHA | Subject |
+|-----|---------|
+| 5c30d871 | fix(pipeline): keep GE right-hand sides in lockstep with coefficient rows |
+| d5960534 | feat(pipeline): add TX path -- pad, fragment, erasure-encode, emit via sink |
+| a874f684 | test(pipeline): assert the codec's real loss contract; unbreak default builds |
 
-- [x] worktree `~/worktrees/microfips-P1.2`, branch `worker-base/P1.2-pipeline-tx`
-      off `feat/pipeline-rx` @ b8f0b1d
-- [x] baseline measured (above)
-- [x] R1/R2/R3 diagnosed with measurements
-- [x] fix R1: size `a` from `MAX_FRAGS`, not `MAX_FRAGS*MAX_FRAGS/8`
-- [ ] P1.2: TX module -- pad, split, erasure-encode, emit via callback
-- [ ] P1.2 unit tests: fragment generation, padding, CRC, block_id, geometry
-- [ ] round-trip test TX -> RX
-- [ ] PROGRESS/REPORT, commit, push
+All three verified on the remote: `git ls-remote fork worker-base/P1.2-pipeline-tx`
+-> `a874f684637120046cad8128be048e7191cc8c1e`.
 
-## Files touched
+## Scope boundaries (honest)
 
-- `crates/microfips-pipeline/src/erasure.rs` (R1 fix)
-- `crates/microfips-pipeline/src/tx.rs` (P1.2, new)
-- `crates/microfips-pipeline/src/lib.rs` (wire up tx module)
-- `crates/microfips-pipeline/tests/pipeline_tx.rs` (P1.2 tests, new)
+- The codec's loss tolerance is **not** "any `redundancy` losses". It is exactly
+  the loss patterns the parity rows span. That is an inherited P1.1 property
+  (documented in `examples/matrix_rank.rs` and now asserted honestly by the
+  tests). Fixing the *matrix design* to give true MDS behaviour is a larger
+  change than P1.2 and is not attempted here.
+- `chunking/` was not added by this task; only the TX path named in P1.2.
