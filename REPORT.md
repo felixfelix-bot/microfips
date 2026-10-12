@@ -180,6 +180,30 @@ note.
 
 ## 6. Verification — observed output
 
+**Ad-hoc verification (run in this session, script since removed):**
+
+A focused script at `~/.cache/hermes/tmp/hermes-verify-p12.sh` was run against
+the worktree. It is *ad-hoc*, not a project-canonical gate: it checks that the
+library builds in both configurations and that the three test targets report
+zero failures. It does not replace the crate's own suite.
+
+```
+== 1. library builds in both configurations ==
+  default (no_std)                                           ok
+  --features std                                             ok
+== 2. changed behaviour: TX -> RX round trip, checked out-of-crate ==
+  pipeline_tx passed                                         ok   (32)
+  pipeline_tx failed                                         ok   (0)
+== 3. previously-failing suites are green ==
+  erasure_vectors failed                                     ok   (15 passed)
+  row_weights failed                                         ok   (1 passed)
+== 4. no_std build has no std-only symbols leaking into the radio path ==
+  no_std build                                               ok
+VERIFY: PASS
+```
+
+**Canonical suite runs (the project's own command, also observed this session):**
+
 ```
 $ cargo test -p microfips-pipeline                # default, no_std
   erasure_vectors  15 passed; 0 failed
@@ -198,6 +222,11 @@ $ cargo build -p microfips-pipeline --all-targets --features std
 **48 tests passing, 0 failing, in both configurations.** Baseline on the
 inherited branch: `erasure_vectors` 12 passed / 3 FAILED plus two test targets
 that could not build.
+
+**Hygiene confirmed:** no diagnostic example was ever committed — `git log
+--all` over the five scratch files (`max_geom_diag`, `ge_repro`, `rank_check`,
+`tx_diag`, `row_align`) returns empty. Only the five pre-existing examples are
+tracked at HEAD. Working tree clean at `18a7d29e`.
 
 ## 7. Commits (all pushed, all verified on the remote)
 
