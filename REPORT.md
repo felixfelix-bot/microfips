@@ -92,12 +92,20 @@ environment faults (target/std/linker), not code bugs.
 
 ## Artifacts committed & pushed
 
-  commit "build(xtensa): add reproducible build-xtensa.sh; fix DQ05 Xtensa env docs"
+  commit 501193b "build(xtensa): add reproducible build-xtensa.sh; fix DQ05 Xtensa env docs"
     - scripts/build-xtensa.sh (new, executable)
     - PROGRESS.md, REPORT.md (work logs)
-  pushed to fork/feat/fips-v0-compat (felixfelix-bot/microfips); push verified
-  by observed push output + `git status` in-sync + `git ls-remote` sha match.
-  (Exact commit sha is recorded in the git log after this commit lands.)
+  branch: feat/fips-v0-compat (stacked on sibling commit e805c3f DQ05-BUILD-C3)
+  remote: fork/feat/fips-v0-compat = felixfelix-bot/microfips
+  push observed: "e805c3f..501193b  feat/fips-v0-compat -> feat/fips-v0-compat";
+  verified in-sync via `git ls-remote` (501193b907f5...) == local HEAD, and
+  `git status` shows no ahead/behind.
+
+Binary checksums (sha256):
+    ddcbc2a667a97c64769445eaf85bbb545daf6dcabbbf0f81c132805cdca1c905  microfips-esp32 (D0WD)
+    ba7ca900140c70b031b86db3319829c2f9c78629a57029641343ab05ad104e91  microfips-esp32s3
+    e20dde580ded375b609423b9d8f63a72a9df9d3b311e91bc917fb2f6c84edc47  microfips-esp32s3-uart
+    05e6fd21ec87e079ea3603dfa5a37d181a422d607ea0444b67fbd2a639e00c83  microfips-esp32s3-usb
 
 ## Notes for next workers
 
