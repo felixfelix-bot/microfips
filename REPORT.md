@@ -112,10 +112,20 @@ None to source code. Only `PROGRESS.md` and `REPORT.md` (worktree-root tracking 
 were written. No compilation errors were encountered, so nothing needed fixing —
 the task's "fix compilation errors if any" clause resolved to "none".
 
-## 8. Honest status
+## 8. Honest status (observed tool output only)
 
-- Built: YES, observed EXIT=0 and the three files on disk.
-- Verified: YES, `file` + `readelf` + sha256 on both target dir and copies.
-- Committed / pushed: see the commit + remote-verify evidence appended below by the
-  worker at the time of this report; only a push whose remote SHA was observed is
-  claimed (cross-check with `git log --oneline -1` and `git ls-remote fork`).
+- Built: YES. Observed `Finished release profile [optimized] target(s) in 3m 40s`
+  and `EXIT=0`; the three ELF files confirmed present on disk.
+- Artifacts copied + verified: YES. `file`, `readelf`, and sha256 on both the target
+  dir and the durable copies; all three pairs MATCH.
+- No source change was needed. Only PROGRESS.md and REPORT.md were written.
+- Committed: YES. `7b5cd71` (local `git rev-parse HEAD` =
+  `7b5cd712a686d48e23c97371ae4734e4a60625b4`).
+- Pushed: YES, observed. `git push fork` reported `2336bc8..7b5cd71  HEAD -> feat/fips-v0-compat`,
+  and `git ls-remote fork refs/heads/feat/fips-v0-compat` returns the same SHA
+  `7b5cd712a686d48e23c97371ae4734e4a60625b4` → remote fork branch == local HEAD.
+- NOT done / out of scope: the `espnow` link failure was NOT fixed (documented
+  pre-existing gap, section 6). No xtensa (esp32/esp32s3) build was attempted.
+- Remaining steps for a successor, if any: none required for this task. If the
+  espnow binary is wanted, that is a separate feature card (rewrite
+  `EspNowTransport` against esp-radio's Rust APIs instead of the ESP-IDF C API).
