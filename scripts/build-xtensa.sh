@@ -15,6 +15,10 @@
 # Extra args are forwarded to cargo (e.g. --features ble).
 set -euo pipefail
 
+# Run from the repo root regardless of caller cwd: the rustup directory
+# override (esp toolchain) and the relative target/ paths both depend on it.
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 chip="${1:-all}"
 shift || true
 extra_args=("$@")
