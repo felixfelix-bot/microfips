@@ -2456,6 +2456,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "microfips-pipeline"
+version = "0.1.0"
+dependencies = [
+ "rand",
+]
+
+[[package]]
 name = "microfips-protocol"
 version = "0.1.0"
 dependencies = [
