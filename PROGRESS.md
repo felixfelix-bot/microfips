@@ -1,64 +1,88 @@
-# PROGRESS — P1.3 Pipeline RX (t_c5dbc0b0)
+# PROGRESS — P1.2 Pipeline TX (fragment + erasure encode + emit)
 
-## PREMISE CORRECTIONS (found at session start)
+## Premise corrections (found at session start)
 
 1. `docs/plan-espnow-fips-mesh.md` and `SPEC.md` **do not exist** in this repo.
-   The task's "Reference" section is unsatisfiable. Work proceeded from the task
-   body itself plus the C reference implementation.
-2. **P1.1 (dependency) was never landed.** `microfips-pipeline` does not exist in
-   any branch; the P1.1 worktree
-   (`/home/c03rad0r/.hermes/profiles/manager/scripts/.worktrees/t_1893bdd7`) was
-   deleted without a push. Its board card is `archived`/done, so the loss was
-   silent. **P1.1's deliverable had to be redone here** or P1.3 had no codec to
-   build on. Source of truth used: balloon-fresh C at
-   `~/repos/balloon-fresh/tracker/firmware/components/erasure/erasure.c` (325 lines)
-   + `include/erasure.h` (37 lines).
+   The task's "Reference:" is unsatisfiable. Work proceeded from the task body
+   plus the existing P1.1 crate.
+2. **P1.1 was already landed** on branch `feat/pipeline-rx` (commits `c1ce40f`,
+   `2062e42`, `b8f0b1d`) by a prior worker, which also began P1.3 (RX).
+   That worker's session is dead; its worktree `~/worktrees/pipeline-rx` holds
+   uncommitted edits. My worktree is a fresh clone off that branch.
+3. **The inherited branch does not compile cleanly** (pre-existing, NOT mine):
+   - `crates/microfips-pipeline/Cargo.toml` declares `[[test]] pipeline_rx`
+     pointing at `tests/pipeline_rx.rs`, which does not exist -> every
+     `cargo test -p microfips-pipeline` fails target resolution.
+   - `tests/row_weights.rs` imports `erasure::parity_row_weight`, which was
+     renamed to `parity_row_bits` -> compile error.
+4. **The inherited branch is RED**: `tests/erasure_vectors.rs` has 3 failing
+   tests (11 pass / 3 fail) that the dead worker was mid-fixing.
+
+## Baseline measured in MY worktree (before any P1.2 change)
+
+    cargo test -p microfips-pipeline            -> target resolution error (item 3)
+    cargo test -p microfips-pipeline --lib      -> 0 tests, ok
+    cargo test -p microfips-pipeline --test erasure_vectors
+        -> 11 passed; 3 FAILED:
+           maximum_geometry_round_trips
+           out_of_order_delivery_decodes_identically
+           recovers_any_loss_pattern_the_parity_rows_can_span
+
+## Root causes of the 3 inherited failures (diagnosed, measured)
+
+### R1. `a` stack buffer is undersized in `ge_solve` (real memory-safety bug)
+`erasure.rs:386` declares `let mut a = [0u8; MAX_FRAGS * MAX_FRAGS / 8]` = 512 B,
+but `row_bytes = matrix_row_bytes(n) = (n>>3)+1` is derived from the **missing
+count** `n`, not from `MAX_FRAGS`. At the max geometry (`n = 64`),
+`n * row_bytes = 64 * 9 = 576 > 512` -> write past the end of a stack array.
+Measured: overflow begins at `n = 64` exactly; `n <= 56` is fine.
+This explains `maximum_geometry_round_trips` (k=64, lose 32 originals).
+
+### R2. Not all of the 3 failures are bugs -- one is an over-claiming test
+`out_of_order_delivery_decodes_identically` (k=8, lose originals 1,3,6) is
+reproduced INCOMPLETE in an isolated harness, and `recovers_any_loss_pattern...`
+fails on byte mismatch, not on completeness.
+Both stem from the same pre-existing codec property that P1.1's own commit
+`b8f0b1d` documents: the reference parity generator's rows have **rank m/2,
+not m** (`examples/matrix_rank.rs`: m=8 -> rank 4, m=12 -> rank 6, m=32 ->
+rank 16; `examples/recovery_rate.rs`: 1 loss 95.3%, 2 losses 83.3%, 3 losses
+69.3%). So a block with `redundancy` parity fragments cannot generally recover
+`redundancy` losses. The dead worker had already started correcting these two
+tests (uncommitted edit changes `lost=[1,3,6]` -> `lost=[2]` and adds a
+`columns_are_spanable` premise assertion).
+
+### R3. Encoder/decoder parity-row alignment is CORRECT (ruled out empirically)
+I suspected an off-by-one (`encode_redundant` seeds row `index+1`; the decoder
+seeds row `redundancy_idx = counter - frag_nb`). A purpose-built example
+(`examples/row_align.rs`, since deleted) printed both sides' rows for k=8:
+they match exactly for every index. The 1-based `+1` on the encoder and the
+1-based `redundancy_idx` on the decoder are the same row number. **No fix
+needed** -- recorded so the next worker does not "fix" a non-bug.
+
+## Scope decision
+
+My task is **P1.2 (TX)**. R1 is a genuine memory-safety bug in code that P1.2
+exercises end-to-end (a TX fragment round-trip through RX at max geometry hits
+it), so it is IN scope and I fixed it. R2/R3 are P1.1/P1.3 artefacts on the
+inherited branch; R3 needs nothing, R2 is a test-correctness issue in the
+inherited suite. I do not silently rewrite the inherited worker's tests; the
+status is recorded here and in REPORT.md for the manager.
 
 ## Milestones
 
-- [x] worktree `~/worktrees/pipeline-rx`, branch `feat/pipeline-rx` off `main` @ f540546
-- [x] P1.1: `microfips-pipeline` crate + PRBS23-XOR erasure port (no_std, alloc)
-      → files: crates/microfips-pipeline/{Cargo.toml,src/erasure.rs,src/fragment.rs,src/lib.rs}
-- [x] P1.1: erasure fidelity tests → tests/erasure_vectors.rs
-- [x] commit `c1ce40f` — P1.1 crate + port + fidelity tests
-- [x] F1/F2 root-caused with measurements (see Findings)
-- [ ] strengthen RX solver past the C's F2 defect
-- [ ] P1.3: Pipeline::recv_frame() RX path → src/lib.rs
-- [ ] P1.3 test: 30% loss out-of-order recovery → tests/pipeline_rx.rs
+- [x] worktree `~/worktrees/microfips-P1.2`, branch `worker-base/P1.2-pipeline-tx`
+      off `feat/pipeline-rx` @ b8f0b1d
+- [x] baseline measured (above)
+- [x] R1/R2/R3 diagnosed with measurements
+- [x] fix R1: size `a` from `MAX_FRAGS`, not `MAX_FRAGS*MAX_FRAGS/8`
+- [ ] P1.2: TX module -- pad, split, erasure-encode, emit via callback
+- [ ] P1.2 unit tests: fragment generation, padding, CRC, block_id, geometry
+- [ ] round-trip test TX -> RX
 - [ ] PROGRESS/REPORT, commit, push
 
-## Findings
+## Files touched
 
-### F1. The reference codec's parity matrix has rank m/2, not m (major)
-`get_parity_matrix_row(n, m)` loops `while nb_coeff < m/2` — it performs `m/2`
-LFSR *draws* and ORs each draw's column into the row. Draws repeat, so rows are
-lighter than nominal and the `redundancy = m/2` rows span only `m/2` dimensions.
-
-Measured (`examples/matrix_rank.rs`):
-    m= 8 rows=4  weights=[4,3,4,3]        rank=4  (need 8)
-    m=12 rows=6  weights=[3,5,5,4,5,5]    rank=6  (need 12)
-    m=16 rows=8  weights=[8,7,7,6,6,7,7,8] rank=8 (need 16)
-    m=24 rows=12 rank=12                          (need 24)
-    m=32 rows=16 rank=16                          (need 32)
-
-End-to-end recovery, k=12 / redundancy=6, 300 random trials per loss count
-(`examples/recovery_rate.rs`):
-    losses=1: 95.3%   losses=2: 83.3%   losses=3: 69.3%
-    losses=4: 51.3%   losses=5: 31.0%   losses=6: 12.0%
-A correct erasure code with 6 parity fragments recovers **100%** of 1..6 losses.
-This is a property of the reference codec, NOT of the Rust port.
-
-### F2. The C decoder runs its solver only inside the parity branch
-`erasure_decoder_process` calls `ge_solve` only when appending a *redundancy*
-fragment, and only when `m2b_rows >= frag_nb_lost` at that instant. Late
-originals never re-trigger it, so otherwise-solvable blocks stay incomplete.
-Reproduced in the C itself: `tools/c_ref_check.c` fails the exact case the Rust
-port fails.
-
-### F3. Rust port status
-Faithful to C for the encoder, PRBS23 stepper and row generator. The RX solver
-was strengthened past the C: rows are stored as permanent full-fidelity
-equations, re-projected against the live missing set on every attempt, both
-solver passes loop until no progress, and rows are selected by rank via
-incremental echelon insertion. This removes F2; F1 still caps recovery, so the
-P1.3 acceptance test must be scaled to the codec's real strength.
+- `crates/microfips-pipeline/src/erasure.rs` (R1 fix)
+- `crates/microfips-pipeline/src/tx.rs` (P1.2, new)
+- `crates/microfips-pipeline/src/lib.rs` (wire up tx module)
+- `crates/microfips-pipeline/tests/pipeline_tx.rs` (P1.2 tests, new)

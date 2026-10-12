@@ -138,25 +138,43 @@ fn echelon_insert(
     accepted: usize,
     candidate: &[u8],
     row_bytes: usize,
+    mut reduce_rhs: impl FnMut(usize),
 ) -> Option<usize> {
     let mut work = [0u8; MAX_FRAGS / 8 + 1];
     work[..row_bytes].copy_from_slice(&candidate[..row_bytes]);
 
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for row in 0..accepted {
-            let pivot_col = pivots[row];
-            if pivot_col == usize::MAX {
-                continue;
+    // Clear the candidate's bit at each existing pivot column, lowest pivot
+    // first. Each basis row is stored in *row-echelon* form: its leading set
+    // bit is `pivots[row]`. Pivots are NOT in acceptance order (the leading bit
+    // of the reduced candidate can be lower than a pivot accepted earlier), so
+    // sort by pivot column and eliminate strictly lowest-first: XORing a row
+    // whose pivot is HIGHER than the bit being cleared would set a bit above
+    // the current leading position and can cancel bits a later row depends on,
+    // which reduces an independent row to zero. Measured on the max geometry
+    // (k=32 projected onto 16 missing): the unsorted sweep reported
+    // `valid_rows=15 < n=16` although an independent GF(2) rank computation
+    // gives 16, and the block never decoded.
+    let mut order = [0usize; MAX_FRAGS];
+    for (slot, ord) in order.iter_mut().enumerate().take(accepted) {
+        *ord = slot;
+    }
+    order[..accepted].sort_unstable_by_key(|&r| pivots[r]);
+
+    for &row in order[..accepted].iter() {
+        let pivot_col = pivots[row];
+        if pivot_col == usize::MAX {
+            continue;
+        }
+        if (work[pivot_col >> 3] >> (pivot_col & 7)) & 1 == 1 {
+            let row_base = row * row_bytes;
+            for byte in 0..row_bytes {
+                work[byte] ^= a[row_base + byte];
             }
-            if (work[pivot_col >> 3] >> (pivot_col & 7)) & 1 == 1 {
-                let row_base = row * row_bytes;
-                for byte in 0..row_bytes {
-                    work[byte] ^= a[row_base + byte];
-                }
-                changed = true;
-            }
+            // Every XOR applied to the coefficient row must be applied to its
+            // right-hand side too, or the stored system pairs a reduced matrix
+            // row with an unreduced data row and the solve silently produces
+            // garbage (while still reporting complete).
+            reduce_rhs(row);
         }
     }
 
@@ -385,7 +403,16 @@ impl<'a> ErasureDecoder<'a> {
         let row_bytes = matrix_row_bytes(n);
 
         // A: n x n coefficient matrix over GF(2); B: n x frag_size data.
-        let mut a = [0u8; MAX_FRAGS * MAX_FRAGS / 8];
+        //
+        // `row_bytes` is derived from `n` (the live missing count), and `a`
+        // holds `n` such rows -- so the array must be sized for the *maximum*
+        // possible `n`, i.e. `MAX_FRAGS` columns. Sizing it as
+        // `MAX_FRAGS * MAX_FRAGS / 8` (= 512 B) is short: at n = 64,
+        // `row_bytes = (64 >> 3) + 1 = 9` and `n * row_bytes = 576 > 512`,
+        // which walks off the end of the array. Use the same `matrix_row_bytes`
+        // helper the rest of the codec uses so the two can never disagree.
+        const A_ROW_BYTES: usize = matrix_row_bytes(MAX_FRAGS);
+        let mut a = [0u8; MAX_FRAGS * A_ROW_BYTES];
         let mut b = [0u8; MAX_FRAGS * MAX_FRAG_SIZE];
 
         for x in a[..n * row_bytes].iter_mut() {
@@ -462,17 +489,30 @@ impl<'a> ErasureDecoder<'a> {
 
             // Accept the row only if it is linearly independent of the ones
             // already taken; dependent rows carry no new information and would
-            // make the system singular.
+            // make the system singular. The same row operations that reduce the
+            // coefficient row must reduce its RHS: `rhs_red` accumulates those
+            // XORs, is copied into slot `valid_rows` on acceptance, and is
+            // discarded on rejection. (Reducing into `b[valid_rows]` directly
+            // would XOR against whatever the slot last held.)
+            let mut rhs_red = rhs;
+            let (a_ref, b_ref) = (&mut a, &b);
+            let fs = self.frag_size;
             match echelon_insert(
-                &mut a,
+                a_ref,
                 &mut pivots,
                 valid_rows,
                 &projected[..row_bytes],
                 row_bytes,
+                |src_row| {
+                    let s = src_row * fs;
+                    for k in 0..fs {
+                        rhs_red[k] ^= b_ref[s + k];
+                    }
+                },
             ) {
                 Some(next) => {
                     let b_off = valid_rows * self.frag_size;
-                    b[b_off..b_off + self.frag_size].copy_from_slice(&rhs[..self.frag_size]);
+                    b[b_off..b_off + self.frag_size].copy_from_slice(&rhs_red[..self.frag_size]);
                     valid_rows = next;
                 }
                 None => continue,
@@ -487,46 +527,45 @@ impl<'a> ErasureDecoder<'a> {
             return;
         }
 
-        // Reduce to row-echelon form, applying each row operation to B too.
-        for pivot in 0..n {
-            let prow_base = pivot * row_bytes;
-            if !get_parity(pivot, &a[prow_base..prow_base + row_bytes]) {
-                for swap in (pivot + 1)..n {
-                    let srow_base = swap * row_bytes;
-                    if get_parity(pivot, &a[srow_base..srow_base + row_bytes]) {
-                        for b_ in 0..row_bytes {
-                            a.swap(prow_base + b_, srow_base + b_);
-                        }
-                        let pdata = pivot * self.frag_size;
-                        let sdata = swap * self.frag_size;
-                        for b_ in 0..self.frag_size {
-                            b.swap(pdata + b_, sdata + b_);
-                        }
-                        break;
-                    }
-                }
+        // Reduce to reduced row-echelon form, applying each row operation to B
+        // too.
+        //
+        // The row `i` accepted by `echelon_insert` pivots on column
+        // `pivots[i]`, which is NOT necessarily column `i`: `echelon_insert`
+        // picks the leading set bit of the reduced candidate, and rows arrive
+        // in arbitrary order. Driving this loop off the diagonal assumption
+        // (`get_parity(pivot, row)` with `pivot == column`) both mis-detects
+        // singular systems and, worse, *succeeds* on a matrix whose rows are
+        // not in the expected positions -- writing out rows that are still
+        // linear combinations of several unknowns as if each were solved.
+        // That is the wrong-reconstruction-with-complete=true defect.
+        // Eliminate on `pivots[]` instead.
+        for pivot_row in 0..n {
+            let prow_base = pivot_row * row_bytes;
+            let pivot_col = pivots[pivot_row];
+            if pivot_col == usize::MAX {
+                // Unreachable once `valid_rows >= n`, but keep the solver
+                // honest: an unknown pivot means the system is not solvable.
+                return;
             }
-
-            if !get_parity(pivot, &a[prow_base..prow_base + row_bytes]) {
-                if crate::ge_trace_enabled() {
-                    extern crate std;
-                    std::eprintln!("  ge: BAIL singular pivot={pivot} n={n}");
-                }
+            // Normalise this row to unit pivot: no other row may have a bit at
+            // `pivot_col`. `echelon_insert` already reduced each accepted row
+            // against the *earlier* pivots, so forward elimination below is
+            // sufficient, but sweeping all rows keeps the invariant explicit.
+            if !get_parity(pivot_col, &a[prow_base..prow_base + row_bytes]) {
                 return;
             }
 
-            // Eliminate this pivot bit from every other row (full reduction,
-            // not just the rows below).
             for elim in 0..n {
-                if elim == pivot {
+                if elim == pivot_row {
                     continue;
                 }
                 let erow_base = elim * row_bytes;
-                if get_parity(pivot, &a[erow_base..erow_base + row_bytes]) {
+                if get_parity(pivot_col, &a[erow_base..erow_base + row_bytes]) {
                     for b_ in 0..row_bytes {
                         a[erow_base + b_] ^= a[prow_base + b_];
                     }
-                    let pdata = pivot * self.frag_size;
+                    let pdata = pivot_row * self.frag_size;
                     let edata = elim * self.frag_size;
                     // Split the borrow across the two disjoint data rows.
                     if edata < pdata {
@@ -549,16 +588,25 @@ impl<'a> ErasureDecoder<'a> {
         }
 
         // Write solved originals back into place.
-        for i in 0..n {
-            let off = self.original_offset(missing_indices[i]);
-            let src = i * self.frag_size;
+        //
+        // After full reduction, row `pivot_row` holds the unit vector for
+        // column `pivots[pivot_row]`, i.e. its RHS is the value of
+        // `missing_indices[pivots[pivot_row]]` -- the mapping is via the pivot
+        // column, not the row ordinal.
+        for pivot_row in 0..n {
+            let pivot_col = pivots[pivot_row];
+            if pivot_col == usize::MAX {
+                continue;
+            }
+            let off = self.original_offset(missing_indices[pivot_col]);
+            let src = pivot_row * self.frag_size;
             // `missing_indices` and the solved rows refer to disjoint memory
             // only in the general case; copy through a small stack buffer.
             let mut tmp = [0u8; MAX_FRAG_SIZE];
             tmp[..self.frag_size].copy_from_slice(&b[src..src + self.frag_size]);
             self.assembly_buf[off..off + self.frag_size]
                 .copy_from_slice(&tmp[..self.frag_size]);
-            self.mark_received(missing_indices[i]);
+            self.mark_received(missing_indices[pivot_col]);
         }
 
         if self.frag_nb_lost == 0 {
